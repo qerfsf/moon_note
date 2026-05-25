@@ -23,6 +23,7 @@ class _NotePageState extends State<NotePage> {
   late TextEditingController _titleController;
   late TextEditingController _contentController;
   final FocusNode _contentFocusNode = FocusNode();
+  String _loadedContent = '';
   bool _isSaving = false;
 
   @override
@@ -41,7 +42,9 @@ class _NotePageState extends State<NotePage> {
       whereArgs: [widget.noteId],
     );
     if (result.isNotEmpty) {
-      _contentController.text = result.first['content'] as String;
+      final content = result.first['content'] as String;
+      _contentController.text = content;
+      _loadedContent = content;
     }
   }
 
@@ -56,18 +59,31 @@ class _NotePageState extends State<NotePage> {
       title = content.isEmpty ? '未命名' : content.split('\n').first;
       if (title.length > 50) title = title.substring(0, 50);
     }
+    final contentChanged = _contentController.text != _loadedContent;
     await db.update(
       'nodes',
-      {'title': title, 'modified_at': now},
+      contentChanged
+          ? {'title': title, 'modified_at': now}
+          : {'title': title},
       where: 'id = ?',
       whereArgs: [widget.noteId],
     );
-    await db.update(
-      'note_content',
-      {'content': _contentController.text, 'modified_at': now},
-      where: 'note_id = ?',
-      whereArgs: [widget.noteId],
-    );
+    if (contentChanged) {
+      await db.update(
+        'note_content',
+        {'content': _contentController.text, 'modified_at': now},
+        where: 'note_id = ?',
+        whereArgs: [widget.noteId],
+      );
+      _loadedContent = _contentController.text;
+    }
+    await db.delete('fts_content',
+        where: 'note_id = ?', whereArgs: [widget.noteId]);
+    await db.insert('fts_content', {
+      'note_id': widget.noteId,
+      'title': title,
+      'content': _contentController.text,
+    });
     _isSaving = false;
   }
 
