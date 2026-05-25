@@ -347,13 +347,15 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _deleteNode(Map<String, dynamic> node) async {
     if ((node['is_system'] as int) == 1) return;
+    final nodeId = node['id'] as String;
+    setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
     final db = await DatabaseHelper.instance.database;
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.update(
       'nodes',
       {'is_deleted': 1, 'deleted_at': now},
       where: 'id = ?',
-      whereArgs: [node['id']],
+      whereArgs: [nodeId],
     );
   }
 
@@ -1195,11 +1197,14 @@ class _HomePageState extends State<HomePage> {
                         ? DismissDirection.none
                         : DismissDirection.endToStart,
                     movementDuration: Duration.zero,
+                    dismissThresholds:
+                        const {DismissDirection.endToStart: 0.2},
                     confirmDismiss: (direction) async {
                       if (isSystem) return false;
                       _deleteNode(node);
                       return true;
                     },
+                    background: const SizedBox.shrink(),
                     secondaryBackground: Container(
                       alignment: Alignment.centerRight,
                       padding: const EdgeInsets.only(right: 24),
@@ -1237,16 +1242,6 @@ class _HomePageState extends State<HomePage> {
                       onLongPress: () {
                         if (!_isSelecting) {
                           _showNodeMenu(context, node);
-                        }
-                      },
-                      onHorizontalDragEnd: (details) {
-                        if (_isSelecting) return;
-                        final v = details.primaryVelocity;
-                        if (v != null && v > 0) {
-                          setState(() {
-                            _isSelecting = true;
-                            _selectedIds.add(nodeId);
-                          });
                         }
                       },
                       child: Container(
