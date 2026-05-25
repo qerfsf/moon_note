@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'database.dart';
@@ -27,6 +28,10 @@ class _NotePageState extends State<NotePage> {
   String _loadedContent = '';
   bool _isSaving = false;
   bool _isPreviewing = false;
+  final List<String> _undoStack = [];
+  final List<String> _redoStack = [];
+  Timer? _snapshotDebounce;
+  bool _isUndoRedo = false;
 
   @override
   void initState() {
@@ -69,6 +74,67 @@ class _NotePageState extends State<NotePage> {
       _contentController.text = content;
       _loadedContent = content;
     }
+    _undoStack.clear();
+    _undoStack.add(_contentController.text);
+  }
+
+  void _onContentChanged() {
+    if (_isUndoRedo) return;
+    _save();
+    _scheduleSnapshot();
+  }
+
+  void _scheduleSnapshot() {
+    // Record "before" state on first keystroke after idle
+    if (_snapshotDebounce == null) {
+      _undoStack.add(_contentController.text);
+      _redoStack.clear();
+    }
+    _snapshotDebounce?.cancel();
+    _snapshotDebounce = Timer(const Duration(milliseconds: 400), () {
+      _pushSnapshot();
+    });
+  }
+
+  void _pushSnapshot() {
+    final text = _contentController.text;
+    if (_undoStack.isNotEmpty && _undoStack.last == text) return;
+    _undoStack.add(text);
+    _redoStack.clear();
+    if (_undoStack.length > 80) _undoStack.removeAt(0);
+  }
+
+  void _undo() {
+    _snapshotDebounce?.cancel();
+    _snapshotDebounce = null;
+    // Push current state to undo if it's different from the last snapshot
+    final current = _contentController.text;
+    if (_undoStack.isEmpty || _undoStack.last != current) {
+      _undoStack.add(current);
+    }
+    if (_undoStack.length < 2) return; // nothing to undo
+    _isUndoRedo = true;
+    _redoStack.add(_undoStack.removeLast());
+    final previous = _undoStack.last;
+    _contentController.text = previous;
+    _contentController.selection =
+        TextSelection.collapsed(offset: previous.length);
+    _isUndoRedo = false;
+    _save();
+  }
+
+  void _redo() {
+    _snapshotDebounce?.cancel();
+    _snapshotDebounce = null;
+    if (_redoStack.isEmpty) return;
+    _isUndoRedo = true;
+    _undoStack.add(_contentController.text);
+    final next = _redoStack.removeLast();
+    _contentController.text = next;
+    _contentController.selection =
+        TextSelection.collapsed(offset: next.length);
+    _isUndoRedo = false;
+    _save();
   }
 
   Future<void> _save() async {
@@ -110,14 +176,14 @@ class _NotePageState extends State<NotePage> {
     _isSaving = false;
   }
 
-  Widget _toolbarBtn(IconData icon, String before, String after) {
+  Widget _toolbarBtn(IconData icon, String before, String after, {VoidCallback? onTap}) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 2),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(6),
-          onTap: () => _insertMarkdown(before, after),
+          onTap: onTap ?? () => _insertMarkdown(before, after),
           child: Padding(
             padding: const EdgeInsets.all(8),
             child: Icon(icon, size: 18, color: _textTertiary),
@@ -188,6 +254,9 @@ class _NotePageState extends State<NotePage> {
             child: ListView(
               scrollDirection: Axis.horizontal,
               children: [
+                _toolbarBtn(Icons.undo, '', '', onTap: _undoStack.length > 1 ? _undo : null),
+                _toolbarBtn(Icons.redo, '', '', onTap: _redoStack.isNotEmpty ? _redo : null),
+                const SizedBox(width: 8),
                 _toolbarBtn(Icons.format_bold, '**', '**'),
                 _toolbarBtn(Icons.format_italic, '*', '*'),
                 _toolbarBtn(Icons.strikethrough_s, '~~', '~~'),
@@ -224,7 +293,7 @@ class _NotePageState extends State<NotePage> {
                 height: 1.7,
               ),
               cursorColor: _textPrimary,
-              onChanged: (_) => _save(),
+              onChanged: (_) => _onContentChanged(),
             ),
           ),
         ],
@@ -324,6 +393,7 @@ class _NotePageState extends State<NotePage> {
 
   @override
   void dispose() {
+    _snapshotDebounce?.cancel();
     _save();
     _titleController.dispose();
     _contentController.dispose();
