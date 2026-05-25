@@ -4,10 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'database.dart';
 
-const _textPrimary = Color(0xFF37352F);
-const _textTertiary = Color(0xFF9B9A97);
-const _borderLight = Color(0xFFEDEDEB);
-
 class NotePage extends StatefulWidget {
   final String noteId;
   final String initialTitle;
@@ -23,6 +19,10 @@ class NotePage extends StatefulWidget {
 }
 
 class _NotePageState extends State<NotePage> {
+  Color get _textPrimary => Theme.of(context).colorScheme.onSurface;
+  Color get _textTertiary => Theme.of(context).colorScheme.outline;
+  Color get _borderLight => Theme.of(context).colorScheme.outlineVariant;
+
   late TextEditingController _titleController;
   late TextEditingController _contentController;
   final FocusNode _titleFocusNode = FocusNode();
@@ -302,7 +302,7 @@ class _NotePageState extends State<NotePage> {
     final target = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('选择笔记',
+        title: Text('选择笔记',
             style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w600,
@@ -310,7 +310,7 @@ class _NotePageState extends State<NotePage> {
         content: SizedBox(
           width: double.maxFinite,
           child: notes.isEmpty
-              ? const Text('没有其他笔记',
+              ? Text('没有其他笔记',
                   style: TextStyle(color: _textTertiary, fontSize: 14))
               : ListView.builder(
                   shrinkWrap: true,
@@ -320,7 +320,7 @@ class _NotePageState extends State<NotePage> {
                     return ListTile(
                       dense: true,
                       title: Text(note['title'] as String,
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 15, color: _textPrimary)),
                       onTap: () => Navigator.pop(context, note),
                     );
@@ -330,7 +330,7 @@ class _NotePageState extends State<NotePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消',
+            child: Text('取消',
                 style:
                     TextStyle(color: _textTertiary, fontSize: 14)),
           ),
@@ -490,7 +490,7 @@ class _NotePageState extends State<NotePage> {
   Widget _buildFindBar() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(
           bottom: BorderSide(color: _borderLight, width: 0.5),
         ),
@@ -508,16 +508,16 @@ class _NotePageState extends State<NotePage> {
                     focusNode: _findFocusNode,
                     onChanged: (_) => _performFind(),
                     textInputAction: TextInputAction.search,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       hintText: '查找',
                       border: InputBorder.none,
                       contentPadding:
-                          EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                          const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                       isDense: true,
                       hintStyle:
                           TextStyle(fontSize: 14, color: _textTertiary),
                     ),
-                    style: const TextStyle(fontSize: 14, color: _textPrimary),
+                    style: TextStyle(fontSize: 14, color: _textPrimary),
                     cursorColor: _textPrimary,
                   ),
                 ),
@@ -527,7 +527,7 @@ class _NotePageState extends State<NotePage> {
                   padding: const EdgeInsets.symmetric(horizontal: 6),
                   child: Text(
                     '${_currentMatchIndex + 1}/${_matchPositions.length}',
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontSize: 11, color: _textTertiary),
                   ),
                 ),
@@ -537,7 +537,7 @@ class _NotePageState extends State<NotePage> {
                 height: 32,
                 width: 32,
                 child: IconButton(
-                  icon: const Icon(Icons.expand_more,
+                  icon: Icon(Icons.expand_more,
                       size: 16, color: _textTertiary),
                   padding: EdgeInsets.zero,
                   onPressed: () =>
@@ -548,7 +548,7 @@ class _NotePageState extends State<NotePage> {
                 height: 32,
                 width: 32,
                 child: IconButton(
-                  icon: const Icon(Icons.close,
+                  icon: Icon(Icons.close,
                       size: 16, color: _textTertiary),
                   padding: EdgeInsets.zero,
                   onPressed: _closeFind,
@@ -566,16 +566,16 @@ class _NotePageState extends State<NotePage> {
                       height: 32,
                       child: TextField(
                         controller: _replaceController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           hintText: '替换为',
                           border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(
+                          contentPadding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 6),
                           isDense: true,
                           hintStyle: TextStyle(
                               fontSize: 14, color: _textTertiary),
                         ),
-                        style: const TextStyle(
+                        style: TextStyle(
                             fontSize: 14, color: _textPrimary),
                         cursorColor: _textPrimary,
                       ),
@@ -686,7 +686,7 @@ class _NotePageState extends State<NotePage> {
               ],
             ),
           ),
-          const Divider(height: 1, thickness: 0.5, color: _borderLight),
+          Divider(height: 1, thickness: 0.5, color: _borderLight),
           const SizedBox(height: 6),
           Expanded(
             child: TextField(
@@ -788,7 +788,7 @@ class _NotePageState extends State<NotePage> {
                         color: Colors.grey.shade50,
                         borderRadius: BorderRadius.circular(6),
                       ),
-                      blockquoteDecoration: const BoxDecoration(
+                      blockquoteDecoration: BoxDecoration(
                         border: Border(
                           left: BorderSide(
                             color: _borderLight,
@@ -811,7 +811,7 @@ class _NotePageState extends State<NotePage> {
               children: [
                 Text(
                   '$chars 字',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: _textTertiary,
                   ),
@@ -842,14 +842,14 @@ class _NotePageState extends State<NotePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: Theme.of(context).colorScheme.surface,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: _textPrimary, size: 20),
+          icon: Icon(Icons.arrow_back, color: _textPrimary, size: 20),
           onPressed: () async {
             await _doSave();
             await _saveViewMode();
@@ -859,13 +859,13 @@ class _NotePageState extends State<NotePage> {
         actions: [
           if (!_isPreviewing)
             IconButton(
-              icon: const Icon(Icons.link, color: _textPrimary, size: 20),
+              icon: Icon(Icons.link, color: _textPrimary, size: 20),
               tooltip: '复制链接',
               onPressed: _copyLink,
             ),
           if (!_isPreviewing)
             IconButton(
-              icon: const Icon(Icons.search, color: _textPrimary, size: 20),
+              icon: Icon(Icons.search, color: _textPrimary, size: 20),
               tooltip: '查找替换',
               onPressed: _openFind,
             ),
@@ -883,8 +883,8 @@ class _NotePageState extends State<NotePage> {
             },
           ),
         ],
-        bottom: const PreferredSize(
-          preferredSize: Size.fromHeight(0.5),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(0.5),
           child: Divider(height: 0.5, thickness: 0.5, color: _borderLight),
         ),
       ),
