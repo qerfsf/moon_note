@@ -16,7 +16,7 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 1, onCreate: _createDB);
+    return await openDatabase(path, version: 2, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
@@ -85,6 +85,17 @@ class DatabaseHelper {
 
     await _insertSystemFolders(db);
     await _insertDefaultSettings(db);
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id, is_deleted)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_modified ON nodes(modified_at)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type, is_deleted)');
+  }
+
+  Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id, is_deleted)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_modified ON nodes(modified_at)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type, is_deleted)');
+    }
   }
 
   Future _insertSystemFolders(Database db) async {

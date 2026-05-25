@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'database.dart';
 
@@ -24,6 +25,7 @@ class NotePage extends StatefulWidget {
 class _NotePageState extends State<NotePage> {
   late TextEditingController _titleController;
   late TextEditingController _contentController;
+  final FocusNode _titleFocusNode = FocusNode();
   final FocusNode _contentFocusNode = FocusNode();
   String _loadedContent = '';
   bool _isSaving = false;
@@ -56,6 +58,17 @@ class _NotePageState extends State<NotePage> {
     _loadContent();
     _loadViewMode();
     _loadFontSize();
+    if (widget.initialTitle == '未命名') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _titleController.selection = const TextSelection(
+            baseOffset: 0,
+            extentOffset: 3,
+          );
+          _titleFocusNode.requestFocus();
+        }
+      });
+    }
   }
 
   Future<void> _loadViewMode() async {
@@ -240,8 +253,8 @@ class _NotePageState extends State<NotePage> {
           borderRadius: BorderRadius.circular(6),
           onTap: onTap ?? () => _insertMarkdown(before, after),
           child: Padding(
-            padding: const EdgeInsets.all(8),
-            child: Icon(icon, size: 18, color: _textTertiary),
+            padding: const EdgeInsets.all(10),
+            child: Icon(icon, size: 20, color: _textTertiary),
           ),
         ),
       ),
@@ -348,6 +361,22 @@ class _NotePageState extends State<NotePage> {
       selection: TextSelection.collapsed(offset: cursorPos),
     );
     _doSave();
+  }
+
+  void _copyLink() {
+    final title = _titleController.text.trim().isEmpty
+        ? '未命名'
+        : _titleController.text.trim();
+    final link = '[$title](moonnote:${widget.noteId})';
+    Clipboard.setData(ClipboardData(text: link));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('链接已复制'),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 120,
+      ),
+    );
   }
 
   void _openFind() {
@@ -607,6 +636,7 @@ class _NotePageState extends State<NotePage> {
         children: [
           TextField(
             controller: _titleController,
+            focusNode: _titleFocusNode,
             textInputAction: TextInputAction.next,
             onSubmitted: (_) => _contentFocusNode.requestFocus(),
             decoration: InputDecoration(
@@ -630,7 +660,7 @@ class _NotePageState extends State<NotePage> {
           ),
           const SizedBox(height: 4),
           SizedBox(
-            height: 36,
+            height: 44,
             child: ListView(
               scrollDirection: Axis.horizontal,
               children: [
@@ -801,6 +831,7 @@ class _NotePageState extends State<NotePage> {
     _doSave();
     _titleController.dispose();
     _contentController.dispose();
+    _titleFocusNode.dispose();
     _contentFocusNode.dispose();
     _findController.dispose();
     _replaceController.dispose();
@@ -826,6 +857,12 @@ class _NotePageState extends State<NotePage> {
           },
         ),
         actions: [
+          if (!_isPreviewing)
+            IconButton(
+              icon: const Icon(Icons.link, color: _textPrimary, size: 20),
+              tooltip: '复制链接',
+              onPressed: _copyLink,
+            ),
           if (!_isPreviewing)
             IconButton(
               icon: const Icon(Icons.search, color: _textPrimary, size: 20),
