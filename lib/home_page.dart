@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'database.dart';
 import 'note_page.dart';
+import 'recycle_bin_page.dart';
 
 class _NoteSearchDelegate extends SearchDelegate<String> {
   @override
@@ -948,6 +949,21 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ]
               : [
+                  if (_currentFolderId == null)
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline,
+                          size: 20, color: _textSecondary),
+                      tooltip: '回收站',
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  const RecycleBinPage()),
+                        );
+                        _loadNodes();
+                      },
+                    ),
                   IconButton(
                     icon: const Icon(Icons.search,
                         size: 20, color: _textSecondary),
