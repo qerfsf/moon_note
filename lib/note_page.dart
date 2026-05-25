@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'database.dart';
 
 const _textPrimary = Color(0xFF37352F);
@@ -25,6 +26,7 @@ class _NotePageState extends State<NotePage> {
   final FocusNode _contentFocusNode = FocusNode();
   String _loadedContent = '';
   bool _isSaving = false;
+  bool _isPreviewing = false;
 
   @override
   void initState() {
@@ -130,6 +132,175 @@ class _NotePageState extends State<NotePage> {
     _save();
   }
 
+  Widget _buildEditor() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _titleController,
+            textInputAction: TextInputAction.next,
+            onSubmitted: (_) => _contentFocusNode.requestFocus(),
+            decoration: const InputDecoration(
+              hintText: '无标题',
+              border: InputBorder.none,
+              hintStyle: TextStyle(
+                color: _textTertiary,
+                fontWeight: FontWeight.w600,
+                fontSize: 22,
+                height: 1.3,
+              ),
+            ),
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w600,
+              color: _textPrimary,
+              height: 1.3,
+            ),
+            cursorColor: _textPrimary,
+            onChanged: (_) => _save(),
+          ),
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 36,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                _toolbarBtn(Icons.format_bold, '**', '**'),
+                _toolbarBtn(Icons.format_italic, '*', '*'),
+                _toolbarBtn(Icons.strikethrough_s, '~~', '~~'),
+                const SizedBox(width: 8),
+                _toolbarBtn(Icons.title, '# ', ''),
+                _toolbarBtn(Icons.format_size, '## ', ''),
+                const SizedBox(width: 8),
+                _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
+                _toolbarBtn(Icons.checklist, '- [ ] ', ''),
+              ],
+            ),
+          ),
+          const Divider(height: 1, thickness: 0.5, color: _borderLight),
+          const SizedBox(height: 6),
+          Expanded(
+            child: TextField(
+              controller: _contentController,
+              focusNode: _contentFocusNode,
+              maxLines: null,
+              expands: true,
+              keyboardType: TextInputType.multiline,
+              decoration: const InputDecoration(
+                hintText: '开始写点什么...',
+                border: InputBorder.none,
+                hintStyle: TextStyle(
+                  color: _textTertiary,
+                  fontSize: 17,
+                  height: 1.7,
+                ),
+              ),
+              style: const TextStyle(
+                fontSize: 17,
+                color: _textPrimary,
+                height: 1.7,
+              ),
+              cursorColor: _textPrimary,
+              onChanged: (_) => _save(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPreview() {
+    final content = _contentController.text;
+    final chars = content.length;
+    return Column(
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _titleController.text.trim().isEmpty
+                        ? '无标题'
+                        : _titleController.text.trim(),
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w600,
+                      color: _textPrimary,
+                      height: 1.3,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  MarkdownBody(
+                    data: content.isEmpty ? '暂无内容' : content,
+                    selectable: true,
+                    styleSheet: MarkdownStyleSheet(
+                      h1: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700,
+                        color: _textPrimary,
+                        height: 1.5,
+                      ),
+                      h2: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                        color: _textPrimary,
+                        height: 1.5,
+                      ),
+                      p: const TextStyle(
+                        fontSize: 17,
+                        color: _textPrimary,
+                        height: 1.7,
+                      ),
+                      code: TextStyle(
+                        fontSize: 15,
+                        color: _textPrimary,
+                        backgroundColor: Colors.grey.shade100,
+                      ),
+                      codeblockDecoration: BoxDecoration(
+                        color: Colors.grey.shade50,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      blockquoteDecoration: const BoxDecoration(
+                        border: Border(
+                          left: BorderSide(
+                            color: _borderLight,
+                            width: 3,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text(
+                  '$chars 字',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: _textTertiary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   void dispose() {
     _save();
@@ -155,110 +326,28 @@ class _NotePageState extends State<NotePage> {
             if (context.mounted) Navigator.pop(context);
           },
         ),
+        actions: [
+          IconButton(
+            icon: Icon(
+              _isPreviewing ? Icons.edit_outlined : Icons.visibility_outlined,
+              color: _textPrimary,
+              size: 20,
+            ),
+            tooltip: _isPreviewing ? '编辑' : '预览',
+            onPressed: () {
+              if (!_isPreviewing) _save();
+              setState(() => _isPreviewing = !_isPreviewing);
+            },
+          ),
+        ],
         bottom: const PreferredSize(
           preferredSize: Size.fromHeight(0.5),
           child: Divider(height: 0.5, thickness: 0.5, color: _borderLight),
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: _titleController,
-              textInputAction: TextInputAction.next,
-              onSubmitted: (_) => _contentFocusNode.requestFocus(),
-              decoration: const InputDecoration(
-                hintText: '无标题',
-                border: InputBorder.none,
-                hintStyle: TextStyle(
-                  color: _textTertiary,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 22,
-                  height: 1.3,
-                ),
-              ),
-              style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w600,
-                color: _textPrimary,
-                height: 1.3,
-              ),
-              cursorColor: _textPrimary,
-              onChanged: (_) => _save(),
-            ),
-            const SizedBox(height: 4),
-            SizedBox(
-              height: 36,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  _toolbarBtn(Icons.format_bold, '**', '**'),
-                  _toolbarBtn(Icons.format_italic, '*', '*'),
-                  _toolbarBtn(Icons.strikethrough_s, '~~', '~~'),
-                  const SizedBox(width: 8),
-                  _toolbarBtn(Icons.title, '# ', ''),
-                  _toolbarBtn(Icons.format_size, '## ', ''),
-                  const SizedBox(width: 8),
-                  _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
-                  _toolbarBtn(Icons.checklist, '- [ ] ', ''),
-                ],
-              ),
-            ),
-            const Divider(height: 1, thickness: 0.5, color: _borderLight),
-            const SizedBox(height: 6),
-            Expanded(
-              child: TextField(
-                controller: _contentController,
-                focusNode: _contentFocusNode,
-                maxLines: null,
-                expands: true,
-                keyboardType: TextInputType.multiline,
-                decoration: const InputDecoration(
-                  hintText: '开始写点什么...',
-                  border: InputBorder.none,
-                  hintStyle: TextStyle(
-                    color: _textTertiary,
-                    fontSize: 17,
-                    height: 1.7,
-                  ),
-                ),
-                style: const TextStyle(
-                  fontSize: 17,
-                  color: _textPrimary,
-                  height: 1.7,
-                ),
-                cursorColor: _textPrimary,
-                onChanged: (_) => _save(),
-              ),
-            ),
-          ],
-        ),
-      ),
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              ListenableBuilder(
-                listenable: _contentController,
-                builder: (context, _) {
-                  final chars = _contentController.text.length;
-                  return Text(
-                    '$chars 字',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: _textTertiary,
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
+      body: _isPreviewing
+          ? _buildPreview()
+          : _buildEditor(),
     );
   }
 }
