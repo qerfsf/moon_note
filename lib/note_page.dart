@@ -18,6 +18,7 @@ class NotePage extends StatefulWidget {
 class _NotePageState extends State<NotePage> {
   late TextEditingController _titleController;
   late TextEditingController _contentController;
+  final FocusNode _contentFocusNode = FocusNode();
   bool _isSaving = false;
 
   @override
@@ -71,6 +72,7 @@ class _NotePageState extends State<NotePage> {
     _save();
     _titleController.dispose();
     _contentController.dispose();
+    _contentFocusNode.dispose();
     super.dispose();
   }
 
@@ -101,6 +103,8 @@ class _NotePageState extends State<NotePage> {
           children: [
             TextField(
               controller: _titleController,
+              textInputAction: TextInputAction.next,
+              onSubmitted: (_) => _contentFocusNode.requestFocus(),
               decoration: const InputDecoration(
                 hintText: '标题',
                 border: InputBorder.none,
@@ -121,6 +125,7 @@ class _NotePageState extends State<NotePage> {
             Expanded(
               child: TextField(
                 controller: _contentController,
+                focusNode: _contentFocusNode,
                 maxLines: null,
                 expands: true,
                 decoration: const InputDecoration(
