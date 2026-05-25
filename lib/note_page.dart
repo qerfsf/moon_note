@@ -276,6 +276,80 @@ class _NotePageState extends State<NotePage> {
     _doSave();
   }
 
+  Future<void> _showLinkPicker() async {
+    final db = await DatabaseHelper.instance.database;
+    final notes = await db.query(
+      'nodes',
+      where: 'type = ? AND is_deleted = 0 AND id != ?',
+      whereArgs: ['note', widget.noteId],
+      orderBy: 'modified_at DESC',
+      limit: 100,
+    );
+    if (!mounted) return;
+    final target = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('选择笔记',
+            style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                color: _textPrimary)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: notes.isEmpty
+              ? const Text('没有其他笔记',
+                  style: TextStyle(color: _textTertiary, fontSize: 14))
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: notes.length,
+                  itemBuilder: (context, index) {
+                    final note = notes[index];
+                    return ListTile(
+                      dense: true,
+                      title: Text(note['title'] as String,
+                          style: const TextStyle(
+                              fontSize: 15, color: _textPrimary)),
+                      onTap: () => Navigator.pop(context, note),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消',
+                style:
+                    TextStyle(color: _textTertiary, fontSize: 14)),
+          ),
+        ],
+      ),
+    );
+    if (target == null) return;
+    final title = target['title'] as String;
+    final targetId = target['id'] as String;
+    _insertLink(title, targetId);
+  }
+
+  void _insertLink(String title, String targetId) {
+    _undoStack.add(_contentController.text);
+    _redoStack.clear();
+    final text = _contentController.text;
+    final sel = _contentController.selection;
+    final pos = sel.isValid ? sel.start : text.length;
+    final linkText = sel.isValid && sel.start != sel.end
+        ? text.substring(sel.start, sel.end)
+        : title;
+    final link = '[$linkText](moonnote:$targetId)';
+    final newText =
+        text.replaceRange(pos, sel.isValid ? sel.end : pos, link);
+    final cursorPos = pos + link.length;
+    _contentController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: cursorPos),
+    );
+    _doSave();
+  }
+
   void _openFind() {
     setState(() {
       _showFind = true;
@@ -573,6 +647,8 @@ class _NotePageState extends State<NotePage> {
                 _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
                 _toolbarBtn(Icons.checklist, '- [ ] ', ''),
                 const SizedBox(width: 8),
+                _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
+                const SizedBox(width: 8),
                 _toolbarBtn(Icons.text_decrease, '', '',
                     onTap: _decreaseFont),
                 _toolbarBtn(Icons.text_increase, '', '',
@@ -639,6 +715,22 @@ class _NotePageState extends State<NotePage> {
                   MarkdownBody(
                     data: content.isEmpty ? '暂无内容' : content,
                     selectable: true,
+                    onTapLink: (text, href, title) {
+                      if (href == null) return;
+                      if (href.startsWith('moonnote:')) {
+                        final targetId = href.substring(9);
+                        final targetTitle = text;
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => NotePage(
+                              noteId: targetId,
+                              initialTitle: targetTitle,
+                            ),
+                          ),
+                        );
+                      }
+                    },
                     styleSheet: MarkdownStyleSheet(
                       h1: TextStyle(
                         fontSize: _fontSize + 5,
