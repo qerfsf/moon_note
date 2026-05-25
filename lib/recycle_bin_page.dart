@@ -1,12 +1,6 @@
 import 'package:flutter/material.dart';
 import 'database.dart';
 
-const _textPrimary = Color(0xFF37352F);
-const _textSecondary = Color(0xFF6B6B67);
-const _textTertiary = Color(0xFF9B9A97);
-const _borderLight = Color(0xFFEDEDEB);
-const _red = Color(0xFFE03E3E);
-
 class RecycleBinPage extends StatefulWidget {
   const RecycleBinPage({super.key});
 
@@ -18,6 +12,12 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
   List<Map<String, dynamic>> _items = [];
   bool _isSelecting = false;
   final Set<String> _selectedIds = {};
+
+  Color get _textPrimary => Theme.of(context).colorScheme.onSurface;
+  Color get _textSecondary => Theme.of(context).colorScheme.onSurfaceVariant;
+  Color get _textTertiary => Theme.of(context).colorScheme.outline;
+  Color get _borderLight => Theme.of(context).colorScheme.outlineVariant;
+  Color get _red => Theme.of(context).colorScheme.error;
 
   @override
   void initState() {
@@ -81,23 +81,23 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('永久删除',
+        title: Text('永久删除',
             style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w600,
                 color: _textPrimary)),
         content: Text('确定永久删除选中的 ${_selectedIds.length} 项吗？此操作不可撤销。',
-            style: const TextStyle(fontSize: 15, color: _textSecondary)),
+            style: TextStyle(fontSize: 15, color: _textSecondary)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消',
+            child: Text('取消',
                 style:
                     TextStyle(color: _textTertiary, fontSize: 14)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('删除',
+            child: Text('删除',
                 style: TextStyle(color: _red, fontSize: 14)),
           ),
         ],
@@ -124,23 +124,23 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('清空回收站',
+        title: Text('清空回收站',
             style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w600,
                 color: _textPrimary)),
         content: Text('确定永久删除回收站中的 ${_items.length} 项吗？此操作不可撤销。',
-            style: const TextStyle(fontSize: 15, color: _textSecondary)),
+            style: TextStyle(fontSize: 15, color: _textSecondary)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消',
+            child: Text('取消',
                 style:
                     TextStyle(color: _textTertiary, fontSize: 14)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('清空',
+            child: Text('清空',
                 style: TextStyle(color: _red, fontSize: 14)),
           ),
         ],
@@ -174,30 +174,30 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
         if (!didPop && _isSelecting) _exitSelection();
       },
       child: Scaffold(
-        backgroundColor: Colors.white,
+        backgroundColor: Theme.of(context).colorScheme.surface,
         appBar: AppBar(
-          backgroundColor: Colors.white,
+          backgroundColor: Theme.of(context).colorScheme.surface,
           elevation: 0,
           surfaceTintColor: Colors.transparent,
           scrolledUnderElevation: 0,
           leading: _isSelecting
               ? IconButton(
-                  icon: const Icon(Icons.close,
+                  icon: Icon(Icons.close,
                       color: _textPrimary, size: 20),
                   onPressed: _exitSelection,
                 )
               : IconButton(
-                  icon: const Icon(Icons.arrow_back,
+                  icon: Icon(Icons.arrow_back,
                       color: _textPrimary, size: 20),
                   onPressed: () => Navigator.pop(context),
                 ),
           title: _isSelecting
               ? Text('已选 ${_selectedIds.length} 项',
-                  style: const TextStyle(
+                  style: TextStyle(
                       color: _textPrimary,
                       fontWeight: FontWeight.w500,
                       fontSize: 17))
-              : const Text('回收站',
+              : Text('回收站',
                   style: TextStyle(
                       color: _textPrimary,
                       fontWeight: FontWeight.w600,
@@ -206,13 +206,13 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
               ? [
                   if (_selectedIds.isNotEmpty) ...[
                     IconButton(
-                      icon: const Icon(Icons.restore,
+                      icon: Icon(Icons.restore,
                           size: 20, color: _textPrimary),
                       tooltip: '恢复',
                       onPressed: _batchRestore,
                     ),
                     IconButton(
-                      icon: const Icon(Icons.delete_forever,
+                      icon: Icon(Icons.delete_forever,
                           size: 20, color: _red),
                       tooltip: '删除',
                       onPressed: _batchDelete,
@@ -222,20 +222,20 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
               : [
                   if (_items.isNotEmpty)
                     IconButton(
-                      icon: const Icon(Icons.delete_sweep_outlined,
+                      icon: Icon(Icons.delete_sweep_outlined,
                           size: 20, color: _textSecondary),
                       tooltip: '清空',
                       onPressed: _emptyAll,
                     ),
                 ],
-          bottom: const PreferredSize(
-            preferredSize: Size.fromHeight(0.5),
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(0.5),
             child:
                 Divider(height: 0.5, thickness: 0.5, color: _borderLight),
           ),
         ),
         body: _items.isEmpty
-            ? const Center(
+            ? Center(
                 child: Text('回收站为空',
                     style: TextStyle(
                         color: _textTertiary, fontSize: 14)),
@@ -255,8 +255,9 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
                             setState(() {
                               if (isSelected) {
                                 _selectedIds.remove(itemId);
-                                if (_selectedIds.isEmpty)
+                                if (_selectedIds.isEmpty) {
                                   _isSelecting = false;
+                                }
                               } else {
                                 _selectedIds.add(itemId);
                               }
@@ -272,7 +273,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
                       }
                     },
                     child: Container(
-                      decoration: const BoxDecoration(
+                      decoration: BoxDecoration(
                         border: Border(
                             bottom: BorderSide(
                                 color: _borderLight, width: 0.5)),
@@ -312,7 +313,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
                               children: [
                                 Text(
                                   item['title'] as String,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 15,
                                     color: _textPrimary,
                                     height: 1.4,
@@ -321,7 +322,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
                                 if (item['deleted_at'] != null)
                                   Text(
                                     '删除于 ${_formatDate(item['deleted_at'] as int)}',
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 11,
                                       color: _textTertiary,
                                       height: 1.3,
@@ -332,28 +333,28 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
                           ),
                           if (!_isSelecting)
                             PopupMenuButton<String>(
-                              icon: const Icon(Icons.more_horiz,
+                              icon: Icon(Icons.more_horiz,
                                   size: 18, color: _textTertiary),
-                              color: Colors.white,
+                              color: Theme.of(context).colorScheme.surface,
                               elevation: 1,
                               shape: RoundedRectangleBorder(
                                   borderRadius:
                                       BorderRadius.circular(8)),
                               onSelected: (value) {
-                                if (value == 'restore')
+                                if (value == 'restore') {
                                   _restore(itemId);
-                                else if (value == 'delete')
+                                } else if (value == 'delete')
                                   _permanentDelete(itemId);
                               },
                               itemBuilder: (context) => [
-                                const PopupMenuItem(
+                                PopupMenuItem(
                                   value: 'restore',
                                   child: Text('恢复',
                                       style: TextStyle(
                                           fontSize: 14,
                                           color: _textPrimary)),
                                 ),
-                                const PopupMenuItem(
+                                PopupMenuItem(
                                   value: 'delete',
                                   child: Text('永久删除',
                                       style: TextStyle(

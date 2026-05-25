@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'database.dart';
 import 'note_page.dart';
 import 'recycle_bin_page.dart';
+import 'settings_page.dart';
 
 class _NoteSearchDelegate extends SearchDelegate<String> {
   @override
@@ -9,21 +10,22 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
 
   @override
   ThemeData appBarTheme(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final theme = Theme.of(context);
     return theme.copyWith(
-      appBarTheme: const AppBarTheme(
-        backgroundColor: Colors.white,
+      appBarTheme: AppBarTheme(
+        backgroundColor: cs.surface,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
       ),
-      inputDecorationTheme: const InputDecorationTheme(
+      inputDecorationTheme: InputDecorationTheme(
         border: InputBorder.none,
-        hintStyle: TextStyle(color: Color(0xFF9B9A97), fontSize: 17),
+        hintStyle: TextStyle(color: cs.outline, fontSize: 17),
       ),
-      textTheme: const TextTheme(
+      textTheme: TextTheme(
         titleLarge: TextStyle(
-            color: Color(0xFF37352F), fontSize: 17, fontWeight: FontWeight.normal),
+            color: cs.onSurface, fontSize: 17, fontWeight: FontWeight.normal),
       ),
     );
   }
@@ -32,28 +34,34 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
   List<Widget>? buildActions(BuildContext context) => [
         if (query.isNotEmpty)
           IconButton(
-            icon: const Icon(Icons.clear, size: 20, color: Color(0xFF6B6B67)),
+            icon: Icon(Icons.clear,
+                size: 20,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
             onPressed: () => query = '',
           ),
       ];
 
   @override
   Widget? buildLeading(BuildContext context) => IconButton(
-        icon: const Icon(Icons.arrow_back, size: 20, color: Color(0xFF37352F)),
+        icon: Icon(Icons.arrow_back,
+            size: 20, color: Theme.of(context).colorScheme.onSurface),
         onPressed: () => close(context, ''),
       );
 
   @override
-  Widget buildResults(BuildContext context) => _buildSearchResults();
+  Widget buildResults(BuildContext context) =>
+      _buildSearchResults(context);
 
   @override
-  Widget buildSuggestions(BuildContext context) => _buildSearchResults();
+  Widget buildSuggestions(BuildContext context) =>
+      _buildSearchResults(context);
 
-  Widget _buildSearchResults() {
+  Widget _buildSearchResults(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     if (query.isEmpty) {
-      return const Center(
+      return Center(
         child: Text('输入关键词搜索笔记',
-            style: TextStyle(color: Color(0xFF9B9A97), fontSize: 14)),
+            style: TextStyle(color: cs.outline, fontSize: 14)),
       );
     }
 
@@ -61,13 +69,13 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
       future: _search(query),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
+          return Center(child: CircularProgressIndicator());
         }
         final results = snapshot.data!;
         if (results.isEmpty) {
-          return const Center(
+          return Center(
             child: Text('没有找到相关笔记',
-                style: TextStyle(color: Color(0xFF9B9A97), fontSize: 14)),
+                style: TextStyle(color: cs.outline, fontSize: 14)),
           );
         }
         return ListView.builder(
@@ -78,21 +86,21 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
             return InkWell(
               onTap: () => close(context, item['note_id'] as String),
               child: Container(
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   border: Border(
-                      bottom: BorderSide(
-                          color: Color(0xFFEDEDEB), width: 0.5)),
+                      bottom:
+                          BorderSide(color: cs.outlineVariant, width: 0.5)),
                 ),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       item['title'] as String? ?? '未命名',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 15,
-                        color: Color(0xFF37352F),
+                        color: cs.onSurface,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -103,9 +111,9 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
                         item['content'] as String,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
-                          color: Color(0xFF6B6B67),
+                          color: cs.onSurfaceVariant,
                           height: 1.4,
                         ),
                       ),
@@ -136,14 +144,6 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
   }
 }
 
-const _textPrimary = Color(0xFF37352F);
-const _textSecondary = Color(0xFF6B6B67);
-const _textTertiary = Color(0xFF9B9A97);
-const _borderLight = Color(0xFFEDEDEB);
-const _bgHover = Color(0xFFF1F1EF);
-const _red = Color(0xFFE03E3E);
-const _accent = Color(0xFF37352F);
-
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -162,6 +162,14 @@ class _HomePageState extends State<HomePage> {
   String _sortDir = 'DESC';
   DateTime? _lastBackPress;
 
+  Color get _textPrimary => Theme.of(context).colorScheme.onSurface;
+  Color get _textSecondary => Theme.of(context).colorScheme.onSurfaceVariant;
+  Color get _textTertiary => Theme.of(context).colorScheme.outline;
+  Color get _borderLight => Theme.of(context).colorScheme.outlineVariant;
+  Color get _bgHover => Theme.of(context).colorScheme.surfaceContainerHighest;
+  Color get _red => Theme.of(context).colorScheme.error;
+  Color get _accent => Theme.of(context).colorScheme.onSurface;
+
   @override
   void initState() {
     super.initState();
@@ -177,12 +185,12 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadNodes() async {
     final db = await DatabaseHelper.instance.database;
-    final nodes = await db.query(
+    final nodes = (await db.query(
       'nodes',
       where: 'parent_id IS ? AND is_deleted = 0',
       whereArgs: [_currentFolderId],
       orderBy: 'is_pinned DESC, pin_order ASC, $_sortField $_sortDir',
-    );
+    )).toList();
     final reminders = await db.query(
       'reminders',
       where: 'is_done = 0',
@@ -210,19 +218,19 @@ class _HomePageState extends State<HomePage> {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
-              title: const Text('系统文件夹缺失',
+              title: Text('系统文件夹缺失',
                   style: TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w600,
                       color: _textPrimary)),
               content: Text(
                 '根目录缺少${missing.join('、')}文件夹，是否重建？',
-                style: const TextStyle(fontSize: 15, color: _textSecondary),
+                style: TextStyle(fontSize: 15, color: _textSecondary),
               ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
-                  child: const Text('取消',
+                  child: Text('取消',
                       style: TextStyle(color: _textTertiary, fontSize: 14)),
                 ),
                 TextButton(
@@ -230,7 +238,7 @@ class _HomePageState extends State<HomePage> {
                     Navigator.pop(ctx);
                     _rebuildSystemFolders(missing);
                   },
-                  child: const Text('重建',
+                  child: Text('重建',
                       style: TextStyle(color: _textPrimary, fontSize: 14)),
                 ),
               ],
@@ -347,15 +355,13 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _deleteNode(Map<String, dynamic> node) async {
     if ((node['is_system'] as int) == 1) return;
-    final nodeId = node['id'] as String;
-    setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
     final db = await DatabaseHelper.instance.database;
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.update(
       'nodes',
       {'is_deleted': 1, 'deleted_at': now},
       where: 'id = ?',
-      whereArgs: [nodeId],
+      whereArgs: [node['id']],
     );
   }
 
@@ -363,20 +369,20 @@ class _HomePageState extends State<HomePage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('确认删除',
+        title: Text('确认删除',
             style: TextStyle(
                 fontSize: 17, fontWeight: FontWeight.w600, color: _textPrimary)),
         content: Text('确定删除选中的 ${_selectedIds.length} 项吗？',
-            style: const TextStyle(fontSize: 15, color: _textSecondary)),
+            style: TextStyle(fontSize: 15, color: _textSecondary)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消',
+            child: Text('取消',
                 style: TextStyle(color: _textTertiary, fontSize: 14)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('删除',
+            child: Text('删除',
                 style: TextStyle(color: _red, fontSize: 14)),
           ),
         ],
@@ -442,14 +448,14 @@ class _HomePageState extends State<HomePage> {
     final targetId = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('移动到',
+        title: Text('移动到',
             style: TextStyle(
                 fontSize: 17, fontWeight: FontWeight.w600, color: _textPrimary)),
         content: SizedBox(
           width: double.maxFinite,
           child: items.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 20),
+              ? Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
                   child: Text('没有可用的目标文件夹',
                       style: TextStyle(color: _textTertiary, fontSize: 14)),
                 )
@@ -469,7 +475,7 @@ class _HomePageState extends State<HomePage> {
                         color: _textTertiary,
                       ),
                       title: Text(item['title'],
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 15, color: _textPrimary)),
                       onTap: () => Navigator.pop(context, item['id']),
                     );
@@ -479,7 +485,7 @@ class _HomePageState extends State<HomePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消',
+            child: Text('取消',
                 style: TextStyle(color: _textTertiary, fontSize: 14)),
           ),
         ],
@@ -574,25 +580,25 @@ class _HomePageState extends State<HomePage> {
       builder: (context) => AlertDialog(
         title: Text(
           node['type'] == 'folder' ? '重命名文件夹' : '重命名笔记',
-          style: const TextStyle(
+          style: TextStyle(
               fontSize: 17, fontWeight: FontWeight.w600, color: _textPrimary),
         ),
         content: TextField(
           controller: controller,
           autofocus: true,
-          style: const TextStyle(color: _textPrimary, fontSize: 15),
+          style: TextStyle(color: _textPrimary, fontSize: 15),
           decoration: InputDecoration(
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(6),
-              borderSide: const BorderSide(color: _borderLight),
+              borderSide: BorderSide(color: _borderLight),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(6),
-              borderSide: const BorderSide(color: _borderLight),
+              borderSide: BorderSide(color: _borderLight),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(6),
-              borderSide: const BorderSide(color: _textSecondary, width: 1.5),
+              borderSide: BorderSide(color: _textSecondary, width: 1.5),
             ),
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -601,12 +607,12 @@ class _HomePageState extends State<HomePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消',
+            child: Text('取消',
                 style: TextStyle(color: _textTertiary, fontSize: 14)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('确定',
+            child: Text('确定',
                 style: TextStyle(color: _textPrimary, fontSize: 14)),
           ),
         ],
@@ -756,7 +762,7 @@ class _HomePageState extends State<HomePage> {
     return await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text(
+        title: Text(
           '移动到',
           style: TextStyle(
               fontSize: 17, fontWeight: FontWeight.w600, color: _textPrimary),
@@ -764,8 +770,8 @@ class _HomePageState extends State<HomePage> {
         content: SizedBox(
           width: double.maxFinite,
           child: items.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 20),
+              ? Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
                   child: Text('没有可用的目标文件夹',
                       style: TextStyle(color: _textTertiary, fontSize: 14)),
                 )
@@ -787,7 +793,7 @@ class _HomePageState extends State<HomePage> {
                       ),
                       title: Text(
                         item['title'],
-                        style: const TextStyle(
+                        style: TextStyle(
                             fontSize: 15, color: _textPrimary),
                       ),
                       onTap: () => Navigator.pop(context, item['id']),
@@ -798,7 +804,7 @@ class _HomePageState extends State<HomePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消',
+            child: Text('取消',
                 style: TextStyle(color: _textTertiary, fontSize: 14)),
           ),
         ],
@@ -836,7 +842,7 @@ class _HomePageState extends State<HomePage> {
   void _showNodeMenu(BuildContext context, Map<String, dynamic> node) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
       ),
@@ -849,7 +855,7 @@ class _HomePageState extends State<HomePage> {
               height: 4,
               margin: const EdgeInsets.only(top: 10, bottom: 6),
               decoration: BoxDecoration(
-                color: _borderLight,
+                color: Theme.of(context).colorScheme.outlineVariant,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -859,11 +865,13 @@ class _HomePageState extends State<HomePage> {
                     ? Icons.push_pin
                     : Icons.push_pin_outlined,
                 size: 20,
-                color: _textSecondary,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
               title: Text(
                 (node['is_pinned'] as int) == 1 ? '取消置顶' : '置顶',
-                style: const TextStyle(fontSize: 15, color: _textPrimary),
+                style: TextStyle(
+                    fontSize: 15,
+                    color: Theme.of(context).colorScheme.onSurface),
               ),
               onTap: () {
                 Navigator.pop(context);
@@ -872,30 +880,39 @@ class _HomePageState extends State<HomePage> {
             ),
             if ((node['is_system'] as int) != 1)
               ListTile(
-                leading: const Icon(Icons.edit_outlined,
-                    size: 20, color: _textSecondary),
-                title: const Text('重命名',
-                    style: TextStyle(fontSize: 15, color: _textPrimary)),
+                leading: Icon(Icons.edit_outlined,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
+                title: Text('重命名',
+                    style: TextStyle(
+                        fontSize: 15,
+                        color: Theme.of(context).colorScheme.onSurface)),
                 onTap: () {
                   Navigator.pop(context);
                   _renameNode(node);
                 },
               ),
             ListTile(
-              leading: const Icon(Icons.drive_file_move_outlined,
-                  size: 20, color: _textSecondary),
-              title: const Text('移动到',
-                  style: TextStyle(fontSize: 15, color: _textPrimary)),
+              leading: Icon(Icons.drive_file_move_outlined,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
+              title: Text('移动到',
+                  style: TextStyle(
+                      fontSize: 15,
+                      color: Theme.of(context).colorScheme.onSurface)),
               onTap: () {
                 Navigator.pop(context);
                 _moveNode(node);
               },
             ),
             ListTile(
-              leading: const Icon(Icons.copy_outlined,
-                  size: 20, color: _textSecondary),
-              title: const Text('复制',
-                  style: TextStyle(fontSize: 15, color: _textPrimary)),
+              leading: Icon(Icons.copy_outlined,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
+              title: Text('复制',
+                  style: TextStyle(
+                      fontSize: 15,
+                      color: Theme.of(context).colorScheme.onSurface)),
               onTap: () {
                 Navigator.pop(context);
                 _copyNode(node);
@@ -909,13 +926,14 @@ class _HomePageState extends State<HomePage> {
                       : Icons.notifications_outlined,
                   size: 20,
                   color: _reminderNoteIds.contains(node['id'])
-                      ? _accent
-                      : _textSecondary,
+                      ? Theme.of(context).colorScheme.onSurface
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
                 title: Text(
                   _reminderNoteIds.contains(node['id']) ? '修改提醒' : '设置提醒',
-                  style:
-                      const TextStyle(fontSize: 15, color: _textPrimary),
+                  style: TextStyle(
+                      fontSize: 15,
+                      color: Theme.of(context).colorScheme.onSurface),
                 ),
                 onTap: () {
                   Navigator.pop(context);
@@ -923,10 +941,13 @@ class _HomePageState extends State<HomePage> {
                 },
               ),
             ListTile(
-              leading: const Icon(Icons.checklist_outlined,
-                  size: 20, color: _textSecondary),
-              title: const Text('多选',
-                  style: TextStyle(fontSize: 15, color: _textPrimary)),
+              leading: Icon(Icons.checklist_outlined,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
+              title: Text('多选',
+                  style: TextStyle(
+                      fontSize: 15,
+                      color: Theme.of(context).colorScheme.onSurface)),
               onTap: () {
                 Navigator.pop(context);
                 setState(() {
@@ -937,9 +958,13 @@ class _HomePageState extends State<HomePage> {
             ),
             if ((node['is_system'] as int) != 1)
               ListTile(
-                leading: const Icon(Icons.delete_outline, size: 20, color: _red),
-                title: const Text('删除',
-                    style: TextStyle(fontSize: 15, color: _red)),
+                leading: Icon(Icons.delete_outline,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.error),
+                title: Text('删除',
+                    style: TextStyle(
+                        fontSize: 15,
+                        color: Theme.of(context).colorScheme.error)),
                 onTap: () {
                   Navigator.pop(context);
                   _deleteNode(node);
@@ -955,7 +980,7 @@ class _HomePageState extends State<HomePage> {
   void _showSortPicker() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
       ),
@@ -968,18 +993,18 @@ class _HomePageState extends State<HomePage> {
               height: 4,
               margin: const EdgeInsets.only(top: 10, bottom: 6),
               decoration: BoxDecoration(
-                color: _borderLight,
+                color: Theme.of(context).colorScheme.outlineVariant,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.only(left: 16, bottom: 8),
+            Padding(
+              padding: const EdgeInsets.only(left: 16, bottom: 8),
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text('排序方式',
                     style: TextStyle(
                         fontSize: 13,
-                        color: _textTertiary,
+                        color: Theme.of(context).colorScheme.outline,
                         fontWeight: FontWeight.w500)),
               ),
             ),
@@ -997,18 +1022,19 @@ class _HomePageState extends State<HomePage> {
   Widget _sortOption(
       BuildContext sheetContext, String label, String field, String dir) {
     final isActive = _sortField == field && _sortDir == dir;
+    final cs = Theme.of(sheetContext).colorScheme;
     return ListTile(
       dense: true,
       leading: Icon(
         isActive ? Icons.check : null,
         size: 18,
-        color: _textPrimary,
+        color: cs.onSurface,
       ),
       title: Text(
         label,
         style: TextStyle(
           fontSize: 15,
-          color: isActive ? _textPrimary : _textSecondary,
+          color: isActive ? cs.onSurface : cs.onSurfaceVariant,
           fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
         ),
       ),
@@ -1073,37 +1099,38 @@ class _HomePageState extends State<HomePage> {
         );
       },
       child: Scaffold(
-        backgroundColor: Colors.white,
+        backgroundColor: Theme.of(context).colorScheme.surface,
         appBar: AppBar(
-          backgroundColor: Colors.white,
+          backgroundColor: Theme.of(context).colorScheme.surface,
           elevation: 0,
           surfaceTintColor: Colors.transparent,
           scrolledUnderElevation: 0,
           leading: _isSelecting
               ? IconButton(
-                  icon: const Icon(Icons.close, color: _textPrimary, size: 20),
+                  icon: Icon(Icons.close,
+                      color: Theme.of(context).colorScheme.onSurface, size: 20),
                   onPressed: _exitSelection,
                 )
               : _currentFolderId != null
                   ? IconButton(
-                      icon: const Icon(Icons.arrow_back,
-                          color: _textPrimary, size: 20),
+                      icon: Icon(Icons.arrow_back,
+                          color: Theme.of(context).colorScheme.onSurface, size: 20),
                       onPressed: _goBack,
                     )
                   : null,
           title: _isSelecting
               ? Text(
                   '已选 ${_selectedIds.length} 项',
-                  style: const TextStyle(
-                    color: _textPrimary,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurface,
                     fontWeight: FontWeight.w500,
                     fontSize: 17,
                   ),
                 )
               : Text(
                   _currentFolderTitle,
-                  style: const TextStyle(
-                    color: _textPrimary,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurface,
                     fontWeight: FontWeight.w600,
                     fontSize: 17,
                   ),
@@ -1113,8 +1140,23 @@ class _HomePageState extends State<HomePage> {
               : [
                   if (_currentFolderId == null)
                     IconButton(
-                      icon: const Icon(Icons.delete_outline,
-                          size: 20, color: _textSecondary),
+                      icon: Icon(Icons.settings_outlined,
+                          size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      tooltip: '设置',
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  const SettingsPage()),
+                        );
+                        _loadNodes();
+                      },
+                    ),
+                  if (_currentFolderId == null)
+                    IconButton(
+                      icon: Icon(Icons.delete_outline,
+                          size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
                       tooltip: '回收站',
                       onPressed: () async {
                         await Navigator.push(
@@ -1127,8 +1169,8 @@ class _HomePageState extends State<HomePage> {
                       },
                     ),
                   IconButton(
-                    icon: const Icon(Icons.search,
-                        size: 20, color: _textSecondary),
+                    icon: Icon(Icons.search,
+                        size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
                     tooltip: '搜索',
                     onPressed: () async {
                       final noteId = await showSearch<String>(
@@ -1156,15 +1198,18 @@ class _HomePageState extends State<HomePage> {
                     },
                   ),
                   IconButton(
-                    icon: const Icon(Icons.swap_vert,
-                        size: 20, color: _textSecondary),
+                    icon: Icon(Icons.swap_vert,
+                        size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
                     tooltip: '排序',
                     onPressed: _showSortPicker,
                   ),
                 ],
-          bottom: const PreferredSize(
-            preferredSize: Size.fromHeight(0.5),
-            child: Divider(height: 0.5, thickness: 0.5, color: _borderLight),
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(0.5),
+            child: Divider(
+                height: 0.5,
+                thickness: 0.5,
+                color: Theme.of(context).colorScheme.outlineVariant),
           ),
         ),
         body: _nodes.isEmpty
@@ -1174,7 +1219,7 @@ class _HomePageState extends State<HomePage> {
                   children: [
                     Icon(Icons.edit_note, size: 40, color: _borderLight),
                     const SizedBox(height: 10),
-                    const Text(
+                    Text(
                       '点击 + 开始记录',
                       style: TextStyle(color: _textTertiary, fontSize: 14),
                     ),
@@ -1201,7 +1246,7 @@ class _HomePageState extends State<HomePage> {
                         const {DismissDirection.endToStart: 0.2},
                     confirmDismiss: (direction) async {
                       if (isSystem) return false;
-                      _deleteNode(node);
+                      await _deleteNode(node);
                       return true;
                     },
                     background: const SizedBox.shrink(),
@@ -1245,8 +1290,7 @@ class _HomePageState extends State<HomePage> {
                         }
                       },
                       child: Container(
-                        decoration: const BoxDecoration(
-                          color: Colors.white,
+                        decoration: BoxDecoration(
                           border: Border(
                               bottom:
                                   BorderSide(color: _borderLight, width: 0.5)),
@@ -1280,8 +1324,8 @@ class _HomePageState extends State<HomePage> {
                                 (node['is_pinned'] as int) == 1)
                               GestureDetector(
                                 onTap: () => _togglePin(node),
-                                child: const Padding(
-                                  padding: EdgeInsets.only(right: 6),
+                                child: Padding(
+                                  padding: const EdgeInsets.only(right: 6),
                                   child: Icon(Icons.push_pin,
                                       size: 17, color: _textSecondary),
                                 ),
@@ -1289,8 +1333,8 @@ class _HomePageState extends State<HomePage> {
                             if (!_isSelecting &&
                                 !isFolder &&
                                 _reminderNoteIds.contains(nodeId))
-                              const Padding(
-                                padding: EdgeInsets.only(right: 6),
+                              Padding(
+                                padding: const EdgeInsets.only(right: 6),
                                 child: Icon(Icons.notifications_active,
                                     size: 14, color: _textSecondary),
                               ),
@@ -1300,7 +1344,7 @@ class _HomePageState extends State<HomePage> {
                                 children: [
                                   Text(
                                     node['title'],
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 15,
                                       color: _textPrimary,
                                       height: 1.4,
@@ -1309,7 +1353,7 @@ class _HomePageState extends State<HomePage> {
                                   Text(
                                     _formatDate(
                                         node['modified_at'] as int),
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 11,
                                       color: _textTertiary,
                                       height: 1.3,
@@ -1414,6 +1458,11 @@ class _ReminderDialogState extends State<_ReminderDialog> {
   late DateTime _date;
   late String _repeatType;
 
+  Color get _onSurface => Theme.of(context).colorScheme.onSurface;
+  Color get _outline => Theme.of(context).colorScheme.outline;
+  Color get _outlineVar => Theme.of(context).colorScheme.outlineVariant;
+  Color get _error => Theme.of(context).colorScheme.error;
+
   static const _repeatOptions = ['once', 'daily', 'weekly', 'monthly', 'yearly'];
   static const _repeatLabels = ['不重复', '每天', '每周', '每月', '每年'];
 
@@ -1461,11 +1510,11 @@ class _ReminderDialogState extends State<_ReminderDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('设置提醒',
+      title: Text('设置提醒',
           style: TextStyle(
               fontSize: 17,
               fontWeight: FontWeight.w600,
-              color: Color(0xFF37352F))),
+              color: _onSurface)),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1483,11 +1532,10 @@ class _ReminderDialogState extends State<_ReminderDialog> {
           const SizedBox(height: 10),
           Row(
             children: [
-              const SizedBox(
+              SizedBox(
                 width: 60,
                 child: Text('重复',
-                    style:
-                        TextStyle(fontSize: 14, color: Color(0xFF37352F))),
+                    style: TextStyle(fontSize: 14, color: _onSurface)),
               ),
               Expanded(
                 child: DropdownButtonHideUnderline(
@@ -1495,13 +1543,13 @@ class _ReminderDialogState extends State<_ReminderDialog> {
                     value: _repeatType,
                     isExpanded: true,
                     isDense: true,
+                    dropdownColor: Theme.of(context).colorScheme.surface,
                     items: List.generate(_repeatOptions.length, (i) {
                       return DropdownMenuItem(
                         value: _repeatOptions[i],
                         child: Text(_repeatLabels[i],
-                            style: const TextStyle(
-                                fontSize: 14,
-                                color: Color(0xFF37352F))),
+                            style: TextStyle(
+                                fontSize: 14, color: _onSurface)),
                       );
                     }),
                     onChanged: (v) {
@@ -1518,14 +1566,13 @@ class _ReminderDialogState extends State<_ReminderDialog> {
         if (widget.hasExisting)
           TextButton(
             onPressed: () => Navigator.pop(context, {'action': 'delete'}),
-            child: const Text('删除提醒',
-                style:
-                    TextStyle(color: Color(0xFFE03E3E), fontSize: 14)),
+            child: Text('删除提醒',
+                style: TextStyle(color: _error, fontSize: 14)),
           ),
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('取消',
-              style: TextStyle(color: Color(0xFF9B9A97), fontSize: 14)),
+          child: Text('取消',
+              style: TextStyle(color: _outline, fontSize: 14)),
         ),
         TextButton(
           onPressed: () => Navigator.pop(context, {
@@ -1533,9 +1580,8 @@ class _ReminderDialogState extends State<_ReminderDialog> {
                 'repeat_type': _repeatType,
                 'repeat_day': 0,
               }),
-          child: const Text('确定',
-              style:
-                  TextStyle(color: Color(0xFF37352F), fontSize: 14)),
+          child: Text('确定',
+              style: TextStyle(color: _onSurface, fontSize: 14)),
         ),
       ],
     );
@@ -1547,8 +1593,7 @@ class _ReminderDialogState extends State<_ReminderDialog> {
         SizedBox(
           width: 60,
           child: Text(label,
-              style: const TextStyle(
-                  fontSize: 14, color: Color(0xFF37352F))),
+              style: TextStyle(fontSize: 14, color: _onSurface)),
         ),
         Expanded(
           child: InkWell(
@@ -1558,12 +1603,11 @@ class _ReminderDialogState extends State<_ReminderDialog> {
               padding:
                   const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               decoration: BoxDecoration(
-                border: Border.all(color: const Color(0xFFEDEDEB)),
+                border: Border.all(color: _outlineVar),
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Text(value,
-                  style: const TextStyle(
-                      fontSize: 14, color: Color(0xFF37352F))),
+                  style: TextStyle(fontSize: 14, color: _onSurface)),
             ),
           ),
         ),
