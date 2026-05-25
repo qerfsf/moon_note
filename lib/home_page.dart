@@ -1028,7 +1028,8 @@ class _HomePageState extends State<HomePage> {
                   final nodeId = node['id'] as String;
                   final isSelected = _selectedIds.contains(nodeId);
 
-                  return InkWell(
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
                     onTap: () async {
                       if (_isSelecting) {
                         _toggleSelection(nodeId);
@@ -1054,6 +1055,14 @@ class _HomePageState extends State<HomePage> {
                     onLongPress: () {
                       if (!_isSelecting) {
                         _showNodeMenu(context, node);
+                      }
+                    },
+                    onHorizontalDragEnd: (_) {
+                      if (!_isSelecting) {
+                        setState(() {
+                          _isSelecting = true;
+                          _selectedIds.add(nodeId);
+                        });
                       }
                     },
                     child: Container(
