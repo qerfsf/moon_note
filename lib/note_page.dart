@@ -236,6 +236,29 @@ class _NotePageState extends State<NotePage> {
           ],
         ),
       ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              ListenableBuilder(
+                listenable: _contentController,
+                builder: (context, _) {
+                  final chars = _contentController.text.length;
+                  return Text(
+                    '$chars 字',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: _textTertiary,
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
