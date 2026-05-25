@@ -87,6 +87,49 @@ class _NotePageState extends State<NotePage> {
     _isSaving = false;
   }
 
+  Widget _toolbarBtn(IconData icon, String before, String after) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => _insertMarkdown(before, after),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Icon(icon, size: 18, color: _textTertiary),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _insertMarkdown(String before, String after) {
+    final text = _contentController.text;
+    final selection = _contentController.selection;
+
+    int start;
+    int end;
+    if (selection.isValid && selection.start != selection.end) {
+      start = selection.start;
+      end = selection.end;
+    } else {
+      start = selection.isValid ? selection.start : text.length;
+      end = start;
+    }
+
+    final selected = text.substring(start, end);
+    final newText =
+        text.replaceRange(start, end, '$before$selected$after');
+    final cursorPos = start + before.length + selected.length;
+
+    _contentController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: cursorPos),
+    );
+    _save();
+  }
+
   @override
   void dispose() {
     _save();
@@ -145,7 +188,26 @@ class _NotePageState extends State<NotePage> {
               cursorColor: _textPrimary,
               onChanged: (_) => _save(),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
+            SizedBox(
+              height: 36,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  _toolbarBtn(Icons.format_bold, '**', '**'),
+                  _toolbarBtn(Icons.format_italic, '*', '*'),
+                  _toolbarBtn(Icons.strikethrough_s, '~~', '~~'),
+                  const SizedBox(width: 8),
+                  _toolbarBtn(Icons.title, '# ', ''),
+                  _toolbarBtn(Icons.format_size, '## ', ''),
+                  const SizedBox(width: 8),
+                  _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
+                  _toolbarBtn(Icons.checklist, '- [ ] ', ''),
+                ],
+              ),
+            ),
+            const Divider(height: 1, thickness: 0.5, color: _borderLight),
+            const SizedBox(height: 6),
             Expanded(
               child: TextField(
                 controller: _contentController,
