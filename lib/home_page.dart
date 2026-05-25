@@ -157,6 +157,7 @@ class _HomePageState extends State<HomePage> {
   String _currentFolderTitle = 'Moon Note';
   bool _isSelecting = false;
   final Set<String> _selectedIds = {};
+  Set<String> _reminderNoteIds = {};
   String _sortField = 'modified_at';
   String _sortDir = 'DESC';
 
@@ -181,8 +182,14 @@ class _HomePageState extends State<HomePage> {
       whereArgs: [_currentFolderId],
       orderBy: 'is_pinned DESC, pin_order ASC, $_sortField $_sortDir',
     );
+    final reminders = await db.query(
+      'reminders',
+      where: 'is_done = 0',
+    );
     setState(() {
       _nodes = nodes;
+      _reminderNoteIds =
+          reminders.map((r) => r['note_id'] as String).toSet();
     });
   }
 
@@ -577,6 +584,60 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _showReminderDialog(Map<String, dynamic> node) async {
+    final nodeId = node['id'] as String;
+    final db = await DatabaseHelper.instance.database;
+    final existing = await db.query(
+      'reminders',
+      where: 'note_id = ? AND is_done = 0',
+      whereArgs: [nodeId],
+    );
+
+    DateTime date = DateTime.now().add(const Duration(hours: 1));
+    String repeatType = 'once';
+
+    if (existing.isNotEmpty) {
+      final r = existing.first;
+      date = DateTime.fromMillisecondsSinceEpoch(r['remind_at'] as int);
+      repeatType = r['repeat_type'] as String;
+    }
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) {
+        return _ReminderDialog(
+          initialDate: date,
+          initialRepeatType: repeatType,
+          hasExisting: existing.isNotEmpty,
+        );
+      },
+    );
+
+    if (result == null) return;
+
+    if (result['action'] == 'delete') {
+      await db.delete(
+        'reminders',
+        where: 'note_id = ?',
+        whereArgs: [nodeId],
+      );
+    } else {
+      await db.rawInsert(
+        'INSERT OR REPLACE INTO reminders(id, note_id, remind_at, repeat_type, repeat_day, is_done, created_at) VALUES(?, ?, ?, ?, ?, 0, ?)',
+        [
+          existing.isNotEmpty ? existing.first['id'] as String : DateTime.now().millisecondsSinceEpoch.toString(),
+          nodeId,
+          result['remind_at'],
+          result['repeat_type'],
+          result['repeat_day'] ?? 0,
+          DateTime.now().millisecondsSinceEpoch,
+        ],
+      );
+    }
+
+    await _loadNodes();
+  }
+
   void _addDescendantIds(
     List<Map<String, dynamic>> allFolders,
     String parentId,
@@ -763,6 +824,27 @@ class _HomePageState extends State<HomePage> {
                 _copyNode(node);
               },
             ),
+            if (node['type'] == 'note')
+              ListTile(
+                leading: Icon(
+                  _reminderNoteIds.contains(node['id'])
+                      ? Icons.notifications_active
+                      : Icons.notifications_outlined,
+                  size: 20,
+                  color: _reminderNoteIds.contains(node['id'])
+                      ? _accent
+                      : _textSecondary,
+                ),
+                title: Text(
+                  _reminderNoteIds.contains(node['id']) ? '修改提醒' : '设置提醒',
+                  style:
+                      const TextStyle(fontSize: 15, color: _textPrimary),
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showReminderDialog(node);
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.checklist_outlined,
                   size: 20, color: _textSecondary),
@@ -932,22 +1014,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
           actions: _isSelecting
-              ? [
-                  if (_selectedIds.isNotEmpty) ...[
-                    IconButton(
-                      icon: const Icon(Icons.drive_file_move_outlined,
-                          size: 20, color: _textPrimary),
-                      tooltip: '移动到',
-                      onPressed: _batchMove,
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline,
-                          size: 20, color: _red),
-                      tooltip: '删除',
-                      onPressed: _batchDelete,
-                    ),
-                  ],
-                ]
+              ? null
               : [
                   if (_currentFolderId == null)
                     IconButton(
@@ -1106,6 +1173,14 @@ class _HomePageState extends State<HomePage> {
                                     size: 17, color: _textSecondary),
                               ),
                             ),
+                          if (!_isSelecting &&
+                              !isFolder &&
+                              _reminderNoteIds.contains(nodeId))
+                            const Padding(
+                              padding: EdgeInsets.only(right: 6),
+                              child: Icon(Icons.notifications_active,
+                                  size: 14, color: _textSecondary),
+                            ),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1202,6 +1277,183 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
       ),
+    );
+  }
+}
+
+class _ReminderDialog extends StatefulWidget {
+  final DateTime initialDate;
+  final String initialRepeatType;
+  final bool hasExisting;
+
+  const _ReminderDialog({
+    required this.initialDate,
+    required this.initialRepeatType,
+    required this.hasExisting,
+  });
+
+  @override
+  State<_ReminderDialog> createState() => _ReminderDialogState();
+}
+
+class _ReminderDialogState extends State<_ReminderDialog> {
+  late DateTime _date;
+  late String _repeatType;
+
+  static const _repeatOptions = ['once', 'daily', 'weekly', 'monthly', 'yearly'];
+  static const _repeatLabels = ['不重复', '每天', '每周', '每月', '每年'];
+
+  @override
+  void initState() {
+    super.initState();
+    _date = widget.initialDate;
+    _repeatType = widget.initialRepeatType;
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365 * 10)),
+    );
+    if (picked != null) {
+      setState(() => _date = DateTime(
+            picked.year,
+            picked.month,
+            picked.day,
+            _date.hour,
+            _date.minute,
+          ));
+    }
+  }
+
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: _date.hour, minute: _date.minute),
+    );
+    if (picked != null) {
+      setState(() => _date = DateTime(
+            _date.year,
+            _date.month,
+            _date.day,
+            picked.hour,
+            picked.minute,
+          ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('设置提醒',
+          style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF37352F))),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _pickerRow(
+            '日期',
+            '${_date.year}/${_date.month.toString().padLeft(2, '0')}/${_date.day.toString().padLeft(2, '0')}',
+            _pickDate,
+          ),
+          const SizedBox(height: 10),
+          _pickerRow(
+            '时间',
+            '${_date.hour.toString().padLeft(2, '0')}:${_date.minute.toString().padLeft(2, '0')}',
+            _pickTime,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const SizedBox(
+                width: 60,
+                child: Text('重复',
+                    style:
+                        TextStyle(fontSize: 14, color: Color(0xFF37352F))),
+              ),
+              Expanded(
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _repeatType,
+                    isExpanded: true,
+                    isDense: true,
+                    items: List.generate(_repeatOptions.length, (i) {
+                      return DropdownMenuItem(
+                        value: _repeatOptions[i],
+                        child: Text(_repeatLabels[i],
+                            style: const TextStyle(
+                                fontSize: 14,
+                                color: Color(0xFF37352F))),
+                      );
+                    }),
+                    onChanged: (v) {
+                      if (v != null) setState(() => _repeatType = v);
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        if (widget.hasExisting)
+          TextButton(
+            onPressed: () => Navigator.pop(context, {'action': 'delete'}),
+            child: const Text('删除提醒',
+                style:
+                    TextStyle(color: Color(0xFFE03E3E), fontSize: 14)),
+          ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消',
+              style: TextStyle(color: Color(0xFF9B9A97), fontSize: 14)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, {
+                'remind_at': _date.millisecondsSinceEpoch,
+                'repeat_type': _repeatType,
+                'repeat_day': 0,
+              }),
+          child: const Text('确定',
+              style:
+                  TextStyle(color: Color(0xFF37352F), fontSize: 14)),
+        ),
+      ],
+    );
+  }
+
+  Widget _pickerRow(String label, String value, VoidCallback onTap) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 60,
+          child: Text(label,
+              style: const TextStyle(
+                  fontSize: 14, color: Color(0xFF37352F))),
+        ),
+        Expanded(
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                border: Border.all(color: const Color(0xFFEDEDEB)),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(value,
+                  style: const TextStyle(
+                      fontSize: 14, color: Color(0xFF37352F))),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
