@@ -166,6 +166,151 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _moveNode(Map<String, dynamic> node) async {
+    final db = await DatabaseHelper.instance.database;
+    final allFolders = await db.query(
+      'nodes',
+      where: 'type = ? AND is_deleted = 0',
+      whereArgs: ['folder'],
+    );
+
+    final excludeIds = <String>{};
+    if (node['type'] == 'folder') {
+      excludeIds.add(node['id'] as String);
+      _addDescendantIds(allFolders, node['id'] as String, excludeIds);
+    }
+    if (node['parent_id'] != null) {
+      excludeIds.add(node['parent_id'] as String);
+    }
+
+    final targetId = await _showFolderPicker(allFolders, excludeIds, node);
+    if (targetId != null && targetId != node['parent_id']) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await db.update(
+        'nodes',
+        {
+          'parent_id': targetId == '__root__' ? null : targetId,
+          'modified_at': now,
+        },
+        where: 'id = ?',
+        whereArgs: [node['id']],
+      );
+      await _loadNodes();
+    }
+  }
+
+  void _addDescendantIds(
+    List<Map<String, dynamic>> allFolders,
+    String parentId,
+    Set<String> result,
+  ) {
+    for (final f in allFolders) {
+      if (f['parent_id'] == parentId) {
+        final id = f['id'] as String;
+        result.add(id);
+        _addDescendantIds(allFolders, id, result);
+      }
+    }
+  }
+
+  Future<String?> _showFolderPicker(
+    List<Map<String, dynamic>> allFolders,
+    Set<String> excludeIds,
+    Map<String, dynamic> node,
+  ) async {
+    final items = <Map<String, dynamic>>[];
+    if (node['parent_id'] != null) {
+      items.add({'id': '__root__', 'title': '根目录', 'depth': 0});
+    }
+
+    final rootFolders = allFolders
+        .where((f) => f['parent_id'] == null)
+        .toList();
+    rootFolders
+        .sort((a, b) => (a['sort_order'] as num).compareTo(b['sort_order']));
+
+    for (final f in rootFolders) {
+      if (!excludeIds.contains(f['id'])) {
+        _addFolderToList(allFolders, f, items, 0, excludeIds);
+      }
+    }
+
+    return await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        title: const Text(
+          '移动到',
+          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: items.isEmpty
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Text('没有可用的目标文件夹',
+                      style: TextStyle(color: Colors.grey)),
+                )
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: items.length,
+                  itemBuilder: (context, index) {
+                    final item = items[index];
+                    final isRoot = item['id'] == '__root__';
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.only(
+                        left: 16.0 + (item['depth'] as int) * 20.0,
+                      ),
+                      leading: Icon(
+                        isRoot ? Icons.home_outlined : Icons.folder_outlined,
+                        size: 20,
+                        color: const Color(0xFFFFC107),
+                      ),
+                      title: Text(
+                        item['title'],
+                        style: const TextStyle(fontSize: 15),
+                      ),
+                      onTap: () => Navigator.pop(context, item['id']),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消', style: TextStyle(color: Colors.grey)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _addFolderToList(
+    List<Map<String, dynamic>> allFolders,
+    Map<String, dynamic> folder,
+    List<Map<String, dynamic>> items,
+    int depth,
+    Set<String> excludeIds,
+  ) {
+    items.add({
+      'id': folder['id'],
+      'title': folder['title'],
+      'depth': depth,
+    });
+    final children = allFolders
+        .where((f) => f['parent_id'] == folder['id'])
+        .toList();
+    children
+        .sort((a, b) => (a['sort_order'] as num).compareTo(b['sort_order']));
+    for (final child in children) {
+      if (!excludeIds.contains(child['id'])) {
+        _addFolderToList(allFolders, child, items, depth + 1, excludeIds);
+      }
+    }
+  }
+
   void _showNodeMenu(BuildContext context, Map<String, dynamic> node) {
     showModalBottomSheet(
       context: context,
@@ -192,6 +337,14 @@ class _HomePageState extends State<HomePage> {
               onTap: () {
                 Navigator.pop(context);
                 _renameNode(node);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_move_outlined, color: Colors.black54),
+              title: const Text('移动到', style: TextStyle(color: Colors.black87)),
+              onTap: () {
+                Navigator.pop(context);
+                _moveNode(node);
               },
             ),
             ListTile(
