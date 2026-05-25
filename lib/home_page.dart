@@ -2,6 +2,13 @@ import 'package:flutter/material.dart';
 import 'database.dart';
 import 'note_page.dart';
 
+const _textPrimary = Color(0xFF37352F);
+const _textSecondary = Color(0xFF6B6B67);
+const _textTertiary = Color(0xFF9B9A97);
+const _borderLight = Color(0xFFEDEDEB);
+const _bgHover = Color(0xFFF1F1EF);
+const _red = Color(0xFFE03E3E);
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -124,28 +131,42 @@ class _HomePageState extends State<HomePage> {
     final result = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.transparent,
         title: Text(
           node['type'] == 'folder' ? '重命名文件夹' : '重命名笔记',
-          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          style: const TextStyle(
+              fontSize: 17, fontWeight: FontWeight.w600, color: _textPrimary),
         ),
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          style: const TextStyle(color: _textPrimary, fontSize: 15),
+          decoration: InputDecoration(
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: _borderLight),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: _borderLight),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: _textSecondary, width: 1.5),
+            ),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消', style: TextStyle(color: Colors.grey)),
+            child: const Text('取消',
+                style: TextStyle(color: _textTertiary, fontSize: 14)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('确定'),
+            child: const Text('确定',
+                style: TextStyle(color: _textPrimary, fontSize: 14)),
           ),
         ],
       ),
@@ -238,11 +259,10 @@ class _HomePageState extends State<HomePage> {
     return await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.transparent,
         title: const Text(
           '移动到',
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          style: TextStyle(
+              fontSize: 17, fontWeight: FontWeight.w600, color: _textPrimary),
         ),
         content: SizedBox(
           width: double.maxFinite,
@@ -250,7 +270,7 @@ class _HomePageState extends State<HomePage> {
               ? const Padding(
                   padding: EdgeInsets.symmetric(vertical: 20),
                   child: Text('没有可用的目标文件夹',
-                      style: TextStyle(color: Colors.grey)),
+                      style: TextStyle(color: _textTertiary, fontSize: 14)),
                 )
               : ListView.builder(
                   shrinkWrap: true,
@@ -261,16 +281,17 @@ class _HomePageState extends State<HomePage> {
                     return ListTile(
                       dense: true,
                       contentPadding: EdgeInsets.only(
-                        left: 16.0 + (item['depth'] as int) * 20.0,
+                        left: 12.0 + (item['depth'] as int) * 20.0,
                       ),
                       leading: Icon(
                         isRoot ? Icons.home_outlined : Icons.folder_outlined,
-                        size: 20,
-                        color: const Color(0xFFFFC107),
+                        size: 18,
+                        color: _textTertiary,
                       ),
                       title: Text(
                         item['title'],
-                        style: const TextStyle(fontSize: 15),
+                        style: const TextStyle(
+                            fontSize: 15, color: _textPrimary),
                       ),
                       onTap: () => Navigator.pop(context, item['id']),
                     );
@@ -280,7 +301,8 @@ class _HomePageState extends State<HomePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('取消', style: TextStyle(color: Colors.grey)),
+            child: const Text('取消',
+                style: TextStyle(color: _textTertiary, fontSize: 14)),
           ),
         ],
       ),
@@ -316,46 +338,51 @@ class _HomePageState extends State<HomePage> {
       context: context,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
       ),
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 36,
+              width: 32,
               height: 4,
-              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              margin: const EdgeInsets.only(top: 10, bottom: 6),
               decoration: BoxDecoration(
-                color: Colors.grey[300],
+                color: _borderLight,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
             ListTile(
-              leading: const Icon(Icons.edit_outlined, color: Colors.black54),
-              title: const Text('重命名', style: TextStyle(color: Colors.black87)),
+              leading: const Icon(Icons.edit_outlined,
+                  size: 20, color: _textSecondary),
+              title: const Text('重命名',
+                  style: TextStyle(fontSize: 15, color: _textPrimary)),
               onTap: () {
                 Navigator.pop(context);
                 _renameNode(node);
               },
             ),
             ListTile(
-              leading: const Icon(Icons.drive_file_move_outlined, color: Colors.black54),
-              title: const Text('移动到', style: TextStyle(color: Colors.black87)),
+              leading: const Icon(Icons.drive_file_move_outlined,
+                  size: 20, color: _textSecondary),
+              title: const Text('移动到',
+                  style: TextStyle(fontSize: 15, color: _textPrimary)),
               onTap: () {
                 Navigator.pop(context);
                 _moveNode(node);
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete_outline, color: Colors.red),
-              title: const Text('删除', style: TextStyle(color: Colors.red)),
+              leading: const Icon(Icons.delete_outline, size: 20, color: _red),
+              title: const Text('删除',
+                  style: TextStyle(fontSize: 15, color: _red)),
               onTap: () {
                 Navigator.pop(context);
                 _deleteNode(node);
               },
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
           ],
         ),
       ),
@@ -377,23 +404,25 @@ class _HomePageState extends State<HomePage> {
           backgroundColor: Colors.white,
           elevation: 0,
           surfaceTintColor: Colors.transparent,
+          scrolledUnderElevation: 0,
           leading: _currentFolderId != null
               ? IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.black87),
+                  icon: const Icon(Icons.arrow_back, color: _textPrimary,
+                      size: 20),
                   onPressed: _goBack,
                 )
               : null,
           title: Text(
             _currentFolderTitle,
             style: const TextStyle(
-              color: Colors.black87,
+              color: _textPrimary,
               fontWeight: FontWeight.w600,
-              fontSize: 18,
+              fontSize: 17,
             ),
           ),
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(1),
-            child: Container(color: Colors.grey[200], height: 1),
+          bottom: const PreferredSize(
+            preferredSize: Size.fromHeight(0.5),
+            child: Divider(height: 0.5, thickness: 0.5, color: _borderLight),
           ),
         ),
         body: _nodes.isEmpty
@@ -401,17 +430,17 @@ class _HomePageState extends State<HomePage> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.note_outlined, size: 48, color: Colors.grey[300]),
-                    const SizedBox(height: 12),
-                    Text(
-                      '点击右下角开始创建',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 14),
+                    Icon(Icons.edit_note, size: 40, color: _borderLight),
+                    const SizedBox(height: 10),
+                    const Text(
+                      '点击 + 开始记录',
+                      style: TextStyle(color: _textTertiary, fontSize: 14),
                     ),
                   ],
                 ),
               )
             : ListView.builder(
-                padding: const EdgeInsets.only(top: 8),
+                padding: EdgeInsets.zero,
                 itemCount: _nodes.length,
                 itemBuilder: (context, index) {
                   final node = _nodes[index];
@@ -438,31 +467,37 @@ class _HomePageState extends State<HomePage> {
                       }
                     },
                     onLongPress: () => _showNodeMenu(context, node),
-                    child: Padding(
+                    child: Container(
+                      decoration: const BoxDecoration(
+                        border: Border(
+                            bottom:
+                                BorderSide(color: _borderLight, width: 0.5)),
+                      ),
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 10),
+                          horizontal: 16, vertical: 12),
                       child: Row(
                         children: [
                           Icon(
-                            isFolder ? Icons.folder : Icons.article_outlined,
-                            size: 20,
-                            color: isFolder
-                                ? const Color(0xFFFFC107)
-                                : Colors.grey[500],
+                            isFolder
+                                ? Icons.folder_outlined
+                                : Icons.article_outlined,
+                            size: 18,
+                            color: _textTertiary,
                           ),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: Text(
                               node['title'],
                               style: const TextStyle(
                                 fontSize: 15,
-                                color: Colors.black87,
+                                color: _textPrimary,
+                                height: 1.4,
                               ),
                             ),
                           ),
                           if (isFolder)
                             Icon(Icons.chevron_right,
-                                size: 18, color: Colors.grey[400]),
+                                size: 16, color: _borderLight),
                         ],
                       ),
                     ),
@@ -475,19 +510,23 @@ class _HomePageState extends State<HomePage> {
             FloatingActionButton.small(
               heroTag: 'folder',
               onPressed: _createFolder,
-              backgroundColor: Colors.grey[100],
-              foregroundColor: Colors.black54,
-              elevation: 1,
-              child: const Icon(Icons.folder_outlined),
+              backgroundColor: _bgHover,
+              foregroundColor: _textSecondary,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+              child: const Icon(Icons.folder_outlined, size: 20),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             FloatingActionButton(
               heroTag: 'note',
               onPressed: _createNote,
-              backgroundColor: Colors.black87,
+              backgroundColor: _textPrimary,
               foregroundColor: Colors.white,
-              elevation: 2,
-              child: const Icon(Icons.add),
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
+              child: const Icon(Icons.add, size: 24),
             ),
           ],
         ),
