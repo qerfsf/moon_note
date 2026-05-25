@@ -34,6 +34,27 @@ class _NotePageState extends State<NotePage> {
     _titleController = TextEditingController(text: widget.initialTitle);
     _contentController = TextEditingController();
     _loadContent();
+    _loadViewMode();
+  }
+
+  Future<void> _loadViewMode() async {
+    final db = await DatabaseHelper.instance.database;
+    final result = await db.query(
+      'app_settings',
+      where: 'key = ?',
+      whereArgs: ['last_view_mode'],
+    );
+    if (result.isNotEmpty) {
+      setState(() => _isPreviewing = result.first['value'] == 'preview');
+    }
+  }
+
+  Future<void> _saveViewMode() async {
+    final db = await DatabaseHelper.instance.database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+      ['last_view_mode', _isPreviewing ? 'preview' : 'edit'],
+    );
   }
 
   Future<void> _loadContent() async {
@@ -323,6 +344,7 @@ class _NotePageState extends State<NotePage> {
           icon: const Icon(Icons.arrow_back, color: _textPrimary, size: 20),
           onPressed: () async {
             await _save();
+            await _saveViewMode();
             if (context.mounted) Navigator.pop(context);
           },
         ),
@@ -337,6 +359,7 @@ class _NotePageState extends State<NotePage> {
             onPressed: () {
               if (!_isPreviewing) _save();
               setState(() => _isPreviewing = !_isPreviewing);
+              _saveViewMode();
             },
           ),
         ],
