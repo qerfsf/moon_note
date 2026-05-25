@@ -160,6 +160,7 @@ class _HomePageState extends State<HomePage> {
   Set<String> _reminderNoteIds = {};
   String _sortField = 'modified_at';
   String _sortDir = 'DESC';
+  DateTime? _lastBackPress;
 
   @override
   void initState() {
@@ -191,6 +192,73 @@ class _HomePageState extends State<HomePage> {
       _reminderNoteIds =
           reminders.map((r) => r['note_id'] as String).toSet();
     });
+
+    if (_currentFolderId == null) {
+      _checkSystemFolders(nodes);
+    }
+  }
+
+  void _checkSystemFolders(List<Map<String, dynamic>> nodes) {
+    final ids = nodes.map((n) => n['id'] as String).toSet();
+    final missing = <String>[];
+    if (!ids.contains('system_reminders')) missing.add('提醒');
+    if (!ids.contains('system_journal')) missing.add('日志');
+
+    if (missing.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('系统文件夹缺失',
+                  style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      color: _textPrimary)),
+              content: Text(
+                '根目录缺少${missing.join('、')}文件夹，是否重建？',
+                style: const TextStyle(fontSize: 15, color: _textSecondary),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('取消',
+                      style: TextStyle(color: _textTertiary, fontSize: 14)),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _rebuildSystemFolders(missing);
+                  },
+                  child: const Text('重建',
+                      style: TextStyle(color: _textPrimary, fontSize: 14)),
+                ),
+              ],
+            ),
+          );
+        }
+      });
+    }
+  }
+
+  Future<void> _rebuildSystemFolders(List<String> missing) async {
+    final db = await DatabaseHelper.instance.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    if (missing.contains('提醒')) {
+      await db.rawInsert('''
+        INSERT OR IGNORE INTO nodes(id, type, parent_id, title, sort_order, is_pinned, pin_order, is_expanded, is_deleted, is_system, created_at, modified_at)
+        VALUES('system_reminders', 'folder', NULL, '提醒', -2.0, 1, -2.0, 0, 0, 1, ?, ?)
+      ''', [now, now]);
+    }
+    if (missing.contains('日志')) {
+      await db.rawInsert('''
+        INSERT OR IGNORE INTO nodes(id, type, parent_id, title, sort_order, is_pinned, pin_order, is_expanded, is_deleted, is_system, created_at, modified_at)
+        VALUES('system_journal', 'folder', NULL, '日志', -1.0, 1, -1.0, 0, 0, 1, ?, ?)
+      ''', [now, now]);
+    }
+
+    await _loadNodes();
   }
 
   Future<void> _createNote() async {
@@ -278,6 +346,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _deleteNode(Map<String, dynamic> node) async {
+    if ((node['is_system'] as int) == 1) return;
     final db = await DatabaseHelper.instance.database;
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.update(
@@ -286,7 +355,6 @@ class _HomePageState extends State<HomePage> {
       where: 'id = ?',
       whereArgs: [node['id']],
     );
-    await _loadNodes();
   }
 
   Future<void> _batchDelete() async {
@@ -497,6 +565,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _renameNode(Map<String, dynamic> node) async {
+    if ((node['is_system'] as int) == 1) return;
     final controller = TextEditingController(text: node['title']);
     final result = await showDialog<String>(
       context: context,
@@ -799,16 +868,17 @@ class _HomePageState extends State<HomePage> {
                 _togglePin(node);
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.edit_outlined,
-                  size: 20, color: _textSecondary),
-              title: const Text('重命名',
-                  style: TextStyle(fontSize: 15, color: _textPrimary)),
-              onTap: () {
-                Navigator.pop(context);
-                _renameNode(node);
-              },
-            ),
+            if ((node['is_system'] as int) != 1)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined,
+                    size: 20, color: _textSecondary),
+                title: const Text('重命名',
+                    style: TextStyle(fontSize: 15, color: _textPrimary)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _renameNode(node);
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.drive_file_move_outlined,
                   size: 20, color: _textSecondary),
@@ -863,15 +933,16 @@ class _HomePageState extends State<HomePage> {
                 });
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline, size: 20, color: _red),
-              title: const Text('删除',
-                  style: TextStyle(fontSize: 15, color: _red)),
-              onTap: () {
-                Navigator.pop(context);
-                _deleteNode(node);
-              },
-            ),
+            if ((node['is_system'] as int) != 1)
+              ListTile(
+                leading: const Icon(Icons.delete_outline, size: 20, color: _red),
+                title: const Text('删除',
+                    style: TextStyle(fontSize: 15, color: _red)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _deleteNode(node);
+                },
+              ),
             const SizedBox(height: 6),
           ],
         ),
@@ -972,15 +1043,32 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: _currentFolderId == null && !_isSelecting,
+      canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) {
-          if (_isSelecting) {
-            _exitSelection();
-          } else if (_currentFolderId != null) {
-            _goBack();
-          }
+        if (didPop) return;
+        if (_isSelecting) {
+          _exitSelection();
+          return;
         }
+        if (_currentFolderId != null) {
+          _goBack();
+          return;
+        }
+        final now = DateTime.now();
+        if (_lastBackPress != null &&
+            now.difference(_lastBackPress!) < const Duration(seconds: 2)) {
+          Navigator.of(context).pop();
+          return;
+        }
+        _lastBackPress = now;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('再按一次退出应用'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+            width: 160,
+          ),
+        );
       },
       child: Scaffold(
         backgroundColor: Colors.white,
@@ -1100,120 +1188,146 @@ class _HomePageState extends State<HomePage> {
                   final nodeId = node['id'] as String;
                   final isSelected = _selectedIds.contains(nodeId);
 
-                  return GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () async {
-                      if (_isSelecting) {
-                        _toggleSelection(nodeId);
-                      } else if (isFolder) {
-                        setState(() {
-                          _currentFolderId = node['id'];
-                          _currentFolderTitle = node['title'];
-                        });
-                        _loadNodes();
-                      } else {
-                        await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => NotePage(
-                              noteId: node['id'],
-                              initialTitle: node['title'],
-                            ),
-                          ),
-                        );
-                        _loadNodes();
-                      }
+                  final isSystem = (node['is_system'] as int) == 1;
+                  return Dismissible(
+                    key: Key(nodeId),
+                    direction: _isSelecting
+                        ? DismissDirection.none
+                        : DismissDirection.endToStart,
+                    movementDuration: Duration.zero,
+                    confirmDismiss: (direction) async {
+                      if (isSystem) return false;
+                      _deleteNode(node);
+                      return true;
                     },
-                    onLongPress: () {
-                      if (!_isSelecting) {
-                        _showNodeMenu(context, node);
-                      }
-                    },
-                    onHorizontalDragEnd: (_) {
-                      if (!_isSelecting) {
-                        setState(() {
-                          _isSelecting = true;
-                          _selectedIds.add(nodeId);
-                        });
-                      }
-                    },
-                    child: Container(
-                      decoration: const BoxDecoration(
-                        border: Border(
-                            bottom:
-                                BorderSide(color: _borderLight, width: 0.5)),
+                    secondaryBackground: Container(
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.only(right: 24),
+                      color: isSystem ? _textTertiary : _red,
+                      child: Icon(
+                        isSystem ? Icons.block : Icons.delete_outline,
+                        size: 22,
+                        color: Colors.white,
                       ),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 12),
-                      child: Row(
-                        children: [
-                          if (_isSelecting)
-                            Padding(
-                              padding: const EdgeInsets.only(right: 10),
-                              child: Icon(
-                                isSelected
-                                    ? Icons.check_circle
-                                    : Icons.circle_outlined,
-                                size: 20,
-                                color:
-                                    isSelected ? _accent : _borderLight,
+                    ),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () async {
+                        if (_isSelecting) {
+                          _toggleSelection(nodeId);
+                        } else if (isFolder) {
+                          setState(() {
+                            _currentFolderId = node['id'];
+                            _currentFolderTitle = node['title'];
+                          });
+                          _loadNodes();
+                        } else {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => NotePage(
+                                noteId: node['id'],
+                                initialTitle: node['title'],
                               ),
-                            )
-                          else
-                            Icon(
-                              isFolder
-                                  ? Icons.folder_outlined
-                                  : Icons.article_outlined,
-                              size: 18,
-                              color: _textTertiary,
                             ),
-                          if (!_isSelecting) const SizedBox(width: 10),
-                          if (!_isSelecting &&
-                              (node['is_pinned'] as int) == 1)
-                            GestureDetector(
-                              onTap: () => _togglePin(node),
-                              child: const Padding(
+                          );
+                          _loadNodes();
+                        }
+                      },
+                      onLongPress: () {
+                        if (!_isSelecting) {
+                          _showNodeMenu(context, node);
+                        }
+                      },
+                      onHorizontalDragEnd: (details) {
+                        if (_isSelecting) return;
+                        final v = details.primaryVelocity;
+                        if (v != null && v > 0) {
+                          setState(() {
+                            _isSelecting = true;
+                            _selectedIds.add(nodeId);
+                          });
+                        }
+                      },
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          color: Colors.white,
+                          border: Border(
+                              bottom:
+                                  BorderSide(color: _borderLight, width: 0.5)),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        child: Row(
+                          children: [
+                            if (_isSelecting)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 10),
+                                child: Icon(
+                                  isSelected
+                                      ? Icons.check_circle
+                                      : Icons.circle_outlined,
+                                  size: 20,
+                                  color:
+                                      isSelected ? _accent : _borderLight,
+                                ),
+                              )
+                            else
+                              Icon(
+                                isFolder
+                                    ? Icons.folder_outlined
+                                    : Icons.article_outlined,
+                                size: 18,
+                                color: _textTertiary,
+                              ),
+                            if (!_isSelecting) const SizedBox(width: 10),
+                            if (!_isSelecting &&
+                                (node['is_pinned'] as int) == 1)
+                              GestureDetector(
+                                onTap: () => _togglePin(node),
+                                child: const Padding(
+                                  padding: EdgeInsets.only(right: 6),
+                                  child: Icon(Icons.push_pin,
+                                      size: 17, color: _textSecondary),
+                                ),
+                              ),
+                            if (!_isSelecting &&
+                                !isFolder &&
+                                _reminderNoteIds.contains(nodeId))
+                              const Padding(
                                 padding: EdgeInsets.only(right: 6),
-                                child: Icon(Icons.push_pin,
-                                    size: 17, color: _textSecondary),
+                                child: Icon(Icons.notifications_active,
+                                    size: 14, color: _textSecondary),
+                              ),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    node['title'],
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      color: _textPrimary,
+                                      height: 1.4,
+                                    ),
+                                  ),
+                                  Text(
+                                    _formatDate(
+                                        node['modified_at'] as int),
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: _textTertiary,
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                          if (!_isSelecting &&
-                              !isFolder &&
-                              _reminderNoteIds.contains(nodeId))
-                            const Padding(
-                              padding: EdgeInsets.only(right: 6),
-                              child: Icon(Icons.notifications_active,
-                                  size: 14, color: _textSecondary),
-                            ),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  node['title'],
-                                  style: const TextStyle(
-                                    fontSize: 15,
-                                    color: _textPrimary,
-                                    height: 1.4,
-                                  ),
-                                ),
-                                Text(
-                                  _formatDate(
-                                      node['modified_at'] as int),
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: _textTertiary,
-                                    height: 1.3,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          if (!_isSelecting && isFolder)
-                            Icon(Icons.chevron_right,
-                                size: 16, color: _borderLight),
-                        ],
+                            if (!_isSelecting && isFolder)
+                              Icon(Icons.chevron_right,
+                                  size: 16, color: _borderLight),
+                          ],
+                        ),
                       ),
                     ),
                   );
