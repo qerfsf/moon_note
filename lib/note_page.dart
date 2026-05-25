@@ -43,6 +43,11 @@ class _NotePageState extends State<NotePage> {
   List<int> _matchPositions = [];
   int _currentMatchIndex = -1;
 
+  double _fontSize = 17;
+  static const double _fontSizeMin = 12;
+  static const double _fontSizeMax = 24;
+  static const double _fontSizeStep = 1;
+
   @override
   void initState() {
     super.initState();
@@ -50,6 +55,7 @@ class _NotePageState extends State<NotePage> {
     _contentController = TextEditingController();
     _loadContent();
     _loadViewMode();
+    _loadFontSize();
   }
 
   Future<void> _loadViewMode() async {
@@ -70,6 +76,41 @@ class _NotePageState extends State<NotePage> {
       'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
       ['last_view_mode', _isPreviewing ? 'preview' : 'edit'],
     );
+  }
+
+  Future<void> _loadFontSize() async {
+    final db = await DatabaseHelper.instance.database;
+    final result = await db.query(
+      'app_settings',
+      where: 'key = ?',
+      whereArgs: ['font_size'],
+    );
+    if (result.isNotEmpty) {
+      final val = double.tryParse(result.first['value'] as String);
+      if (val != null && val >= _fontSizeMin && val <= _fontSizeMax) {
+        setState(() => _fontSize = val);
+      }
+    }
+  }
+
+  Future<void> _saveFontSize() async {
+    final db = await DatabaseHelper.instance.database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+      ['font_size', _fontSize.toStringAsFixed(0)],
+    );
+  }
+
+  void _increaseFont() {
+    if (_fontSize >= _fontSizeMax) return;
+    setState(() => _fontSize += _fontSizeStep);
+    _saveFontSize();
+  }
+
+  void _decreaseFont() {
+    if (_fontSize <= _fontSizeMin) return;
+    setState(() => _fontSize -= _fontSizeStep);
+    _saveFontSize();
   }
 
   Future<void> _loadContent() async {
@@ -494,18 +535,18 @@ class _NotePageState extends State<NotePage> {
             controller: _titleController,
             textInputAction: TextInputAction.next,
             onSubmitted: (_) => _contentFocusNode.requestFocus(),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: '无标题',
               border: InputBorder.none,
               hintStyle: TextStyle(
                 color: _textTertiary,
                 fontWeight: FontWeight.w600,
-                fontSize: 22,
+                fontSize: _fontSize + 5,
                 height: 1.3,
               ),
             ),
-            style: const TextStyle(
-              fontSize: 22,
+            style: TextStyle(
+              fontSize: _fontSize + 5,
               fontWeight: FontWeight.w600,
               color: _textPrimary,
               height: 1.3,
@@ -531,6 +572,11 @@ class _NotePageState extends State<NotePage> {
                 const SizedBox(width: 8),
                 _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
                 _toolbarBtn(Icons.checklist, '- [ ] ', ''),
+                const SizedBox(width: 8),
+                _toolbarBtn(Icons.text_decrease, '', '',
+                    onTap: _decreaseFont),
+                _toolbarBtn(Icons.text_increase, '', '',
+                    onTap: _increaseFont),
               ],
             ),
           ),
@@ -543,17 +589,17 @@ class _NotePageState extends State<NotePage> {
               maxLines: null,
               expands: true,
               keyboardType: TextInputType.multiline,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 hintText: '开始写点什么...',
                 border: InputBorder.none,
                 hintStyle: TextStyle(
                   color: _textTertiary,
-                  fontSize: 17,
+                  fontSize: _fontSize,
                   height: 1.7,
                 ),
               ),
-              style: const TextStyle(
-                fontSize: 17,
+              style: TextStyle(
+                fontSize: _fontSize,
                 color: _textPrimary,
                 height: 1.7,
               ),
@@ -582,8 +628,8 @@ class _NotePageState extends State<NotePage> {
                     _titleController.text.trim().isEmpty
                         ? '无标题'
                         : _titleController.text.trim(),
-                    style: const TextStyle(
-                      fontSize: 22,
+                    style: TextStyle(
+                      fontSize: _fontSize + 5,
                       fontWeight: FontWeight.w600,
                       color: _textPrimary,
                       height: 1.3,
@@ -594,20 +640,20 @@ class _NotePageState extends State<NotePage> {
                     data: content.isEmpty ? '暂无内容' : content,
                     selectable: true,
                     styleSheet: MarkdownStyleSheet(
-                      h1: const TextStyle(
-                        fontSize: 22,
+                      h1: TextStyle(
+                        fontSize: _fontSize + 5,
                         fontWeight: FontWeight.w700,
                         color: _textPrimary,
                         height: 1.5,
                       ),
-                      h2: const TextStyle(
-                        fontSize: 20,
+                      h2: TextStyle(
+                        fontSize: _fontSize + 3,
                         fontWeight: FontWeight.w600,
                         color: _textPrimary,
                         height: 1.5,
                       ),
-                      p: const TextStyle(
-                        fontSize: 17,
+                      p: TextStyle(
+                        fontSize: _fontSize,
                         color: _textPrimary,
                         height: 1.7,
                       ),
