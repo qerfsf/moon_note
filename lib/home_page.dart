@@ -1140,7 +1140,41 @@ class _HomePageState extends State<HomePage> {
                 },
               ),
         floatingActionButton: _isSelecting
-            ? null
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FloatingActionButton.small(
+                    heroTag: 'batchmove',
+                    onPressed:
+                        _selectedIds.isNotEmpty ? _batchMove : null,
+                    backgroundColor: _bgHover,
+                    foregroundColor: _selectedIds.isNotEmpty
+                        ? _textSecondary
+                        : _textTertiary,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    child: const Icon(Icons.drive_file_move_outlined,
+                        size: 20),
+                  ),
+                  const SizedBox(height: 6),
+                  FloatingActionButton(
+                    heroTag: 'batchdelete',
+                    onPressed:
+                        _selectedIds.isNotEmpty ? _batchDelete : null,
+                    backgroundColor: _selectedIds.isNotEmpty
+                        ? _red
+                        : _bgHover,
+                    foregroundColor: _selectedIds.isNotEmpty
+                        ? Colors.white
+                        : _textTertiary,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                    child: const Icon(Icons.delete_outline, size: 24),
+                  ),
+                ],
+              )
             : Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
