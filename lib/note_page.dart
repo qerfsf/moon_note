@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'database.dart';
 
+const _textPrimary = Color(0xFF37352F);
+const _textTertiary = Color(0xFF9B9A97);
+const _borderLight = Color(0xFFEDEDEB);
+
 class NotePage extends StatefulWidget {
   final String noteId;
   final String initialTitle;
@@ -84,20 +88,21 @@ class _NotePageState extends State<NotePage> {
         backgroundColor: Colors.white,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
+        scrolledUnderElevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black87),
+          icon: const Icon(Icons.arrow_back, color: _textPrimary, size: 20),
           onPressed: () async {
             await _save();
             if (context.mounted) Navigator.pop(context);
           },
         ),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(color: Colors.grey[200], height: 1),
+        bottom: const PreferredSize(
+          preferredSize: Size.fromHeight(0.5),
+          child: Divider(height: 0.5, thickness: 0.5, color: _borderLight),
         ),
       ),
       body: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -106,36 +111,47 @@ class _NotePageState extends State<NotePage> {
               textInputAction: TextInputAction.next,
               onSubmitted: (_) => _contentFocusNode.requestFocus(),
               decoration: const InputDecoration(
-                hintText: '标题',
+                hintText: '无标题',
                 border: InputBorder.none,
                 hintStyle: TextStyle(
-                  color: Colors.black26,
+                  color: _textTertiary,
                   fontWeight: FontWeight.w600,
-                  fontSize: 24,
+                  fontSize: 22,
+                  height: 1.3,
                 ),
               ),
               style: const TextStyle(
-                fontSize: 24,
+                fontSize: 22,
                 fontWeight: FontWeight.w600,
-                color: Colors.black87,
+                color: _textPrimary,
+                height: 1.3,
               ),
+              cursorColor: _textPrimary,
               onChanged: (_) => _save(),
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 8),
             Expanded(
               child: TextField(
                 controller: _contentController,
                 focusNode: _contentFocusNode,
                 maxLines: null,
                 expands: true,
+                keyboardType: TextInputType.multiline,
                 decoration: const InputDecoration(
+                  hintText: '开始写点什么...',
                   border: InputBorder.none,
+                  hintStyle: TextStyle(
+                    color: _textTertiary,
+                    fontSize: 17,
+                    height: 1.7,
+                  ),
                 ),
                 style: const TextStyle(
-                  fontSize: 16,
-                  color: Colors.black87,
+                  fontSize: 17,
+                  color: _textPrimary,
                   height: 1.7,
                 ),
+                cursorColor: _textPrimary,
                 onChanged: (_) => _save(),
               ),
             ),
