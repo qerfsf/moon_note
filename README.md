@@ -1,16 +1,41 @@
-# moon_note
+# Moon Note
 
-A new Flutter project.
+简洁的 Flutter 笔记应用，支持 Markdown 编辑和预览。
 
-## Getting Started
+## 功能
 
-This project is a starting point for a Flutter application.
+- 创建笔记和文件夹，支持无限嵌套
+- Markdown 编辑，工具栏快捷插入格式
+- 一键切换编辑/预览模式，预览记忆
+- 多选批量操作（移动、删除、恢复）
+- 置顶、排序（修改时间/标题/创建时间）
+- 标题和内容全文搜索
+- 长按菜单 + 水平滑动快速进入多选
+- 回收站（软删除、恢复、清空）
+- 字数统计
 
-A few resources to get you started if this is your first Flutter project:
+## 运行
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+```
+cd D:\moon_note
+flutter run -d windows          # Windows
+flutter run -d aacd9ae7         # Android (Redmi K80)
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## 技术栈
+
+- **框架：** Flutter 3.32+ / Dart
+- **数据库：** SQLite (sqflite)
+- **Markdown 渲染：** flutter_markdown
+- **平台：** Windows + Android
+
+## 数据库结构
+
+| 表 | 说明 |
+|---|---|
+| nodes | 文件夹和笔记 |
+| note_content | 笔记正文 |
+| fts_content | 全文搜索索引 |
+| reminders | 提醒 |
+| note_links | 笔记链接 |
+| app_settings | 应用设置 |
