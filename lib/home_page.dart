@@ -2,6 +2,139 @@ import 'package:flutter/material.dart';
 import 'database.dart';
 import 'note_page.dart';
 
+class _NoteSearchDelegate extends SearchDelegate<String> {
+  @override
+  String get searchFieldLabel => '搜索笔记...';
+
+  @override
+  ThemeData appBarTheme(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.copyWith(
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        scrolledUnderElevation: 0,
+      ),
+      inputDecorationTheme: const InputDecorationTheme(
+        border: InputBorder.none,
+        hintStyle: TextStyle(color: Color(0xFF9B9A97), fontSize: 17),
+      ),
+      textTheme: const TextTheme(
+        titleLarge: TextStyle(
+            color: Color(0xFF37352F), fontSize: 17, fontWeight: FontWeight.normal),
+      ),
+    );
+  }
+
+  @override
+  List<Widget>? buildActions(BuildContext context) => [
+        if (query.isNotEmpty)
+          IconButton(
+            icon: const Icon(Icons.clear, size: 20, color: Color(0xFF6B6B67)),
+            onPressed: () => query = '',
+          ),
+      ];
+
+  @override
+  Widget? buildLeading(BuildContext context) => IconButton(
+        icon: const Icon(Icons.arrow_back, size: 20, color: Color(0xFF37352F)),
+        onPressed: () => close(context, ''),
+      );
+
+  @override
+  Widget buildResults(BuildContext context) => _buildSearchResults();
+
+  @override
+  Widget buildSuggestions(BuildContext context) => _buildSearchResults();
+
+  Widget _buildSearchResults() {
+    if (query.isEmpty) {
+      return const Center(
+        child: Text('输入关键词搜索笔记',
+            style: TextStyle(color: Color(0xFF9B9A97), fontSize: 14)),
+      );
+    }
+
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: _search(query),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final results = snapshot.data!;
+        if (results.isEmpty) {
+          return const Center(
+            child: Text('没有找到相关笔记',
+                style: TextStyle(color: Color(0xFF9B9A97), fontSize: 14)),
+          );
+        }
+        return ListView.builder(
+          padding: EdgeInsets.zero,
+          itemCount: results.length,
+          itemBuilder: (context, index) {
+            final item = results[index];
+            return InkWell(
+              onTap: () => close(context, item['note_id'] as String),
+              child: Container(
+                decoration: const BoxDecoration(
+                  border: Border(
+                      bottom: BorderSide(
+                          color: Color(0xFFEDEDEB), width: 0.5)),
+                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item['title'] as String? ?? '未命名',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        color: Color(0xFF37352F),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (item['content'] != null &&
+                        (item['content'] as String).isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        item['content'] as String,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Color(0xFF6B6B67),
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _search(String keyword) async {
+    final db = await DatabaseHelper.instance.database;
+    final like = '%$keyword%';
+    return await db.rawQuery('''
+      SELECT DISTINCT f.note_id, f.title,
+        substr(f.content, 1, 100) as content
+      FROM fts_content f
+      INNER JOIN nodes n ON n.id = f.note_id
+      WHERE n.is_deleted = 0
+        AND (f.title LIKE ? OR f.content LIKE ?)
+      ORDER BY n.modified_at DESC
+      LIMIT 50
+    ''', [like, like]);
+  }
+}
+
 const _textPrimary = Color(0xFF37352F);
 const _textSecondary = Color(0xFF6B6B67);
 const _textTertiary = Color(0xFF9B9A97);
@@ -75,6 +208,11 @@ class _HomePageState extends State<HomePage> {
         'note_id': id,
         'content': '',
         'modified_at': now,
+      });
+      await db.insert('fts_content', {
+        'note_id': id,
+        'title': '未命名',
+        'content': '',
       });
       await _loadNodes();
     } catch (e) {
@@ -338,7 +476,6 @@ class _HomePageState extends State<HomePage> {
       {
         'is_pinned': isPinned ? 0 : 1,
         'pin_order': isPinned ? 0 : now.toDouble(),
-        'modified_at': now,
       },
       where: 'id = ?',
       whereArgs: [node['id']],
@@ -393,10 +530,9 @@ class _HomePageState extends State<HomePage> {
     );
     if (result != null && result.isNotEmpty) {
       final db = await DatabaseHelper.instance.database;
-      final now = DateTime.now().millisecondsSinceEpoch;
       await db.update(
         'nodes',
-        {'title': result, 'modified_at': now},
+        {'title': result},
         where: 'id = ?',
         whereArgs: [node['id']],
       );
@@ -726,6 +862,12 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  String _formatDate(int timestamp) {
+    final dt = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    return '${dt.month.toString().padLeft(2, '0')}/${dt.day.toString().padLeft(2, '0')} '
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+
   void _toggleSelection(String id) {
     setState(() {
       if (_selectedIds.contains(id)) {
@@ -806,6 +948,35 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ]
               : [
+                  IconButton(
+                    icon: const Icon(Icons.search,
+                        size: 20, color: _textSecondary),
+                    tooltip: '搜索',
+                    onPressed: () async {
+                      final noteId = await showSearch<String>(
+                        context: context,
+                        delegate: _NoteSearchDelegate(),
+                      );
+                      if (noteId != null && noteId.isNotEmpty && mounted) {
+                        final db = await DatabaseHelper.instance.database;
+                        final node = await db.query('nodes',
+                            where: 'id = ?', whereArgs: [noteId]);
+                        if (node.isNotEmpty && mounted) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => NotePage(
+                                noteId: noteId,
+                                initialTitle:
+                                    node.first['title'] as String? ?? '',
+                              ),
+                            ),
+                          );
+                          _loadNodes();
+                        }
+                      }
+                    },
+                  ),
                   IconButton(
                     icon: const Icon(Icons.swap_vert,
                         size: 20, color: _textSecondary),
@@ -902,19 +1073,36 @@ class _HomePageState extends State<HomePage> {
                           if (!_isSelecting) const SizedBox(width: 10),
                           if (!_isSelecting &&
                               (node['is_pinned'] as int) == 1)
-                            const Padding(
-                              padding: EdgeInsets.only(right: 6),
-                              child: Icon(Icons.push_pin,
-                                  size: 14, color: _textTertiary),
+                            GestureDetector(
+                              onTap: () => _togglePin(node),
+                              child: const Padding(
+                                padding: EdgeInsets.only(right: 6),
+                                child: Icon(Icons.push_pin,
+                                    size: 17, color: _textSecondary),
+                              ),
                             ),
                           Expanded(
-                            child: Text(
-                              node['title'],
-                              style: const TextStyle(
-                                fontSize: 15,
-                                color: _textPrimary,
-                                height: 1.4,
-                              ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  node['title'],
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    color: _textPrimary,
+                                    height: 1.4,
+                                  ),
+                                ),
+                                Text(
+                                  _formatDate(
+                                      node['modified_at'] as int),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: _textTertiary,
+                                    height: 1.3,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                           if (!_isSelecting && isFolder)
