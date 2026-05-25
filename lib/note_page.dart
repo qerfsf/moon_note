@@ -31,6 +31,7 @@ class _NotePageState extends State<NotePage> {
   final List<String> _undoStack = [];
   final List<String> _redoStack = [];
   Timer? _snapshotDebounce;
+  Timer? _saveDebounce;
   bool _isUndoRedo = false;
 
   @override
@@ -80,12 +81,11 @@ class _NotePageState extends State<NotePage> {
 
   void _onContentChanged() {
     if (_isUndoRedo) return;
-    _save();
     _scheduleSnapshot();
+    _scheduleSave();
   }
 
   void _scheduleSnapshot() {
-    // Record "before" state on first keystroke after idle
     if (_snapshotDebounce == null) {
       _undoStack.add(_contentController.text);
       _redoStack.clear();
@@ -93,6 +93,13 @@ class _NotePageState extends State<NotePage> {
     _snapshotDebounce?.cancel();
     _snapshotDebounce = Timer(const Duration(milliseconds: 400), () {
       _pushSnapshot();
+    });
+  }
+
+  void _scheduleSave() {
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 500), () {
+      _doSave();
     });
   }
 
@@ -120,7 +127,7 @@ class _NotePageState extends State<NotePage> {
     _contentController.selection =
         TextSelection.collapsed(offset: previous.length);
     _isUndoRedo = false;
-    _save();
+    _doSave();
   }
 
   void _redo() {
@@ -134,10 +141,11 @@ class _NotePageState extends State<NotePage> {
     _contentController.selection =
         TextSelection.collapsed(offset: next.length);
     _isUndoRedo = false;
-    _save();
+    _doSave();
   }
 
-  Future<void> _save() async {
+  Future<void> _doSave() async {
+    _saveDebounce?.cancel();
     if (_isSaving) return;
     _isSaving = true;
     final db = await DatabaseHelper.instance.database;
@@ -166,13 +174,10 @@ class _NotePageState extends State<NotePage> {
       );
       _loadedContent = _contentController.text;
     }
-    await db.delete('fts_content',
-        where: 'note_id = ?', whereArgs: [widget.noteId]);
-    await db.insert('fts_content', {
-      'note_id': widget.noteId,
-      'title': title,
-      'content': _contentController.text,
-    });
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO fts_content(note_id, title, content) VALUES(?, ?, ?)',
+      [widget.noteId, title, _contentController.text],
+    );
     _isSaving = false;
   }
 
@@ -194,6 +199,8 @@ class _NotePageState extends State<NotePage> {
   }
 
   void _insertMarkdown(String before, String after) {
+    _undoStack.add(_contentController.text);
+    _redoStack.clear();
     final text = _contentController.text;
     final selection = _contentController.selection;
 
@@ -216,7 +223,7 @@ class _NotePageState extends State<NotePage> {
       text: newText,
       selection: TextSelection.collapsed(offset: cursorPos),
     );
-    _save();
+    _doSave();
   }
 
   Widget _buildEditor() {
@@ -246,7 +253,7 @@ class _NotePageState extends State<NotePage> {
               height: 1.3,
             ),
             cursorColor: _textPrimary,
-            onChanged: (_) => _save(),
+            onChanged: (_) => _scheduleSave(),
           ),
           const SizedBox(height: 4),
           SizedBox(
@@ -394,7 +401,8 @@ class _NotePageState extends State<NotePage> {
   @override
   void dispose() {
     _snapshotDebounce?.cancel();
-    _save();
+    _saveDebounce?.cancel();
+    _doSave();
     _titleController.dispose();
     _contentController.dispose();
     _contentFocusNode.dispose();
@@ -413,7 +421,7 @@ class _NotePageState extends State<NotePage> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: _textPrimary, size: 20),
           onPressed: () async {
-            await _save();
+            await _doSave();
             await _saveViewMode();
             if (context.mounted) Navigator.pop(context);
           },
@@ -427,7 +435,7 @@ class _NotePageState extends State<NotePage> {
             ),
             tooltip: _isPreviewing ? '编辑' : '预览',
             onPressed: () {
-              if (!_isPreviewing) _save();
+              if (!_isPreviewing) _doSave();
               setState(() => _isPreviewing = !_isPreviewing);
               _saveViewMode();
             },
