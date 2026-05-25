@@ -34,6 +34,15 @@ class _NotePageState extends State<NotePage> {
   Timer? _saveDebounce;
   bool _isUndoRedo = false;
 
+  // Find/replace state
+  bool _showFind = false;
+  bool _showReplaceRow = false;
+  final TextEditingController _findController = TextEditingController();
+  final TextEditingController _replaceController = TextEditingController();
+  final FocusNode _findFocusNode = FocusNode();
+  List<int> _matchPositions = [];
+  int _currentMatchIndex = -1;
+
   @override
   void initState() {
     super.initState();
@@ -226,6 +235,255 @@ class _NotePageState extends State<NotePage> {
     _doSave();
   }
 
+  void _openFind() {
+    setState(() {
+      _showFind = true;
+      _showReplaceRow = false;
+      _matchPositions = [];
+      _currentMatchIndex = -1;
+    });
+    _findFocusNode.requestFocus();
+  }
+
+  void _closeFind() {
+    setState(() {
+      _showFind = false;
+      _matchPositions = [];
+      _currentMatchIndex = -1;
+    });
+    _findController.clear();
+    _replaceController.clear();
+  }
+
+  void _performFind() {
+    final query = _findController.text;
+    if (query.isEmpty) {
+      setState(() {
+        _matchPositions = [];
+        _currentMatchIndex = -1;
+      });
+      return;
+    }
+    final text = _contentController.text;
+    final lowerText = text.toLowerCase();
+    final lowerQuery = query.toLowerCase();
+    final positions = <int>[];
+    int start = 0;
+    while (true) {
+      final idx = lowerText.indexOf(lowerQuery, start);
+      if (idx == -1) break;
+      positions.add(idx);
+      start = idx + lowerQuery.length;
+    }
+    setState(() {
+      _matchPositions = positions;
+      _currentMatchIndex = 0;
+    });
+    if (positions.isNotEmpty) _selectMatch(0);
+  }
+
+  void _selectMatch(int index) {
+    if (_matchPositions.isEmpty) return;
+    final pos = _matchPositions[index];
+    final len = _findController.text.length;
+    _contentController.selection = TextSelection(
+      baseOffset: pos,
+      extentOffset: pos + len,
+    );
+    _contentFocusNode.unfocus();
+  }
+
+  void _findNext() {
+    if (_matchPositions.isEmpty) return;
+    final next = (_currentMatchIndex + 1) % _matchPositions.length;
+    setState(() => _currentMatchIndex = next);
+    _selectMatch(next);
+  }
+
+  void _findPrev() {
+    if (_matchPositions.isEmpty) return;
+    final prev = (_currentMatchIndex - 1 + _matchPositions.length) %
+        _matchPositions.length;
+    setState(() => _currentMatchIndex = prev);
+    _selectMatch(prev);
+  }
+
+  void _replaceOne() {
+    if (_matchPositions.isEmpty || _currentMatchIndex < 0) return;
+    final query = _findController.text;
+    final replacement = _replaceController.text;
+    final pos = _matchPositions[_currentMatchIndex];
+    final text = _contentController.text;
+    final newText =
+        text.replaceRange(pos, pos + query.length, replacement);
+    _undoStack.add(text);
+    _redoStack.clear();
+    _contentController.text = newText;
+    _doSave();
+    _performFind();
+  }
+
+  void _replaceAll() {
+    if (_matchPositions.isEmpty) return;
+    final query = _findController.text;
+    final replacement = _replaceController.text;
+    final text = _contentController.text;
+    _undoStack.add(text);
+    _redoStack.clear();
+    final buf = StringBuffer();
+    int lastEnd = 0;
+    for (final pos in _matchPositions) {
+      buf.write(text.substring(lastEnd, pos));
+      buf.write(replacement);
+      lastEnd = pos + query.length;
+    }
+    buf.write(text.substring(lastEnd));
+    _contentController.text = buf.toString();
+    _doSave();
+    _performFind();
+  }
+
+  Widget _buildFindBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: const BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: _borderLight, width: 0.5),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  height: 32,
+                  child: TextField(
+                    controller: _findController,
+                    focusNode: _findFocusNode,
+                    onChanged: (_) => _performFind(),
+                    textInputAction: TextInputAction.search,
+                    decoration: const InputDecoration(
+                      hintText: '查找',
+                      border: InputBorder.none,
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      isDense: true,
+                      hintStyle:
+                          TextStyle(fontSize: 14, color: _textTertiary),
+                    ),
+                    style: const TextStyle(fontSize: 14, color: _textPrimary),
+                    cursorColor: _textPrimary,
+                  ),
+                ),
+              ),
+              if (_matchPositions.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '${_currentMatchIndex + 1}/${_matchPositions.length}',
+                    style: const TextStyle(
+                        fontSize: 11, color: _textTertiary),
+                  ),
+                ),
+              _findNavBtn(Icons.keyboard_arrow_up, _findPrev),
+              _findNavBtn(Icons.keyboard_arrow_down, _findNext),
+              SizedBox(
+                height: 32,
+                width: 32,
+                child: IconButton(
+                  icon: const Icon(Icons.expand_more,
+                      size: 16, color: _textTertiary),
+                  padding: EdgeInsets.zero,
+                  onPressed: () =>
+                      setState(() => _showReplaceRow = !_showReplaceRow),
+                ),
+              ),
+              SizedBox(
+                height: 32,
+                width: 32,
+                child: IconButton(
+                  icon: const Icon(Icons.close,
+                      size: 16, color: _textTertiary),
+                  padding: EdgeInsets.zero,
+                  onPressed: _closeFind,
+                ),
+              ),
+            ],
+          ),
+          if (_showReplaceRow)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: 32,
+                      child: TextField(
+                        controller: _replaceController,
+                        decoration: const InputDecoration(
+                          hintText: '替换为',
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 6),
+                          isDense: true,
+                          hintStyle: TextStyle(
+                              fontSize: 14, color: _textTertiary),
+                        ),
+                        style: const TextStyle(
+                            fontSize: 14, color: _textPrimary),
+                        cursorColor: _textPrimary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  _textBtn('替换', _replaceOne,
+                      enabled: _matchPositions.isNotEmpty),
+                  const SizedBox(width: 4),
+                  _textBtn('全部', _replaceAll,
+                      enabled: _matchPositions.isNotEmpty),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _findNavBtn(IconData icon, VoidCallback onTap) {
+    return SizedBox(
+      height: 32,
+      width: 28,
+      child: IconButton(
+        icon: Icon(icon, size: 16, color: _textTertiary),
+        padding: EdgeInsets.zero,
+        onPressed: onTap,
+      ),
+    );
+  }
+
+  Widget _textBtn(String label, VoidCallback onTap, {bool enabled = true}) {
+    return SizedBox(
+      height: 28,
+      child: TextButton(
+        onPressed: enabled ? onTap : null,
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: enabled ? _textPrimary : _textTertiary,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildEditor() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -406,6 +664,9 @@ class _NotePageState extends State<NotePage> {
     _titleController.dispose();
     _contentController.dispose();
     _contentFocusNode.dispose();
+    _findController.dispose();
+    _replaceController.dispose();
+    _findFocusNode.dispose();
     super.dispose();
   }
 
@@ -427,6 +688,12 @@ class _NotePageState extends State<NotePage> {
           },
         ),
         actions: [
+          if (!_isPreviewing)
+            IconButton(
+              icon: const Icon(Icons.search, color: _textPrimary, size: 20),
+              tooltip: '查找替换',
+              onPressed: _openFind,
+            ),
           IconButton(
             icon: Icon(
               _isPreviewing ? Icons.edit_outlined : Icons.visibility_outlined,
@@ -446,9 +713,15 @@ class _NotePageState extends State<NotePage> {
           child: Divider(height: 0.5, thickness: 0.5, color: _borderLight),
         ),
       ),
-      body: _isPreviewing
-          ? _buildPreview()
-          : _buildEditor(),
+      body: Column(
+        children: [
+          if (_showFind && !_isPreviewing) _buildFindBar(),
+          Expanded(
+            child:
+                _isPreviewing ? _buildPreview() : _buildEditor(),
+          ),
+        ],
+      ),
     );
   }
 }
