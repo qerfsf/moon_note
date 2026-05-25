@@ -165,45 +165,6 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _loadNodes();
-    _ensureJournalToday();
-  }
-
-  Future<void> _ensureJournalToday() async {
-    final now = DateTime.now();
-    final today = '${now.year}/${now.month.toString().padLeft(2, '0')}/${now.day.toString().padLeft(2, '0')}';
-    final db = await DatabaseHelper.instance.database;
-    final existing = await db.query(
-      'nodes',
-      where: 'parent_id = ? AND title = ? AND is_deleted = 0',
-      whereArgs: ['system_journal', today],
-    );
-    if (existing.isNotEmpty) return;
-    final ts = now.millisecondsSinceEpoch;
-    final id = 'journal_$today';
-    await db.insert('nodes', {
-      'id': id,
-      'type': 'note',
-      'parent_id': 'system_journal',
-      'title': today,
-      'sort_order': ts.toDouble(),
-      'is_pinned': 0,
-      'pin_order': 0,
-      'is_expanded': 0,
-      'is_deleted': 0,
-      'is_system': 0,
-      'created_at': ts,
-      'modified_at': ts,
-    });
-    await db.insert('note_content', {
-      'note_id': id,
-      'content': '',
-      'modified_at': ts,
-    });
-    await db.insert('fts_content', {
-      'note_id': id,
-      'title': today,
-      'content': '',
-    });
   }
 
   void _exitSelection() {
@@ -237,11 +198,16 @@ class _HomePageState extends State<HomePage> {
       final db = await DatabaseHelper.instance.database;
       final now = DateTime.now().millisecondsSinceEpoch;
       final id = now.toString();
+      final isJournal = _currentFolderId == 'system_journal';
+      final now2 = DateTime.now();
+      final title = isJournal
+          ? '${now2.year}/${now2.month.toString().padLeft(2, '0')}/${now2.day.toString().padLeft(2, '0')}'
+          : '未命名';
       await db.insert('nodes', {
         'id': id,
         'type': 'note',
         'parent_id': _currentFolderId,
-        'title': '未命名',
+        'title': title,
         'sort_order': now.toDouble(),
         'is_pinned': 0,
         'pin_order': 0,
@@ -258,7 +224,7 @@ class _HomePageState extends State<HomePage> {
       });
       await db.insert('fts_content', {
         'note_id': id,
-        'title': '未命名',
+        'title': title,
         'content': '',
       });
       await _loadNodes();
