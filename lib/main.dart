@@ -111,6 +111,12 @@ void main() async {
   try {
     await SyncService.instance.startServer();
   } catch (_) {}
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    SyncService.instance.onAdbDeviceConnected = (host, port) async {
+      await SyncService.instance.tryUsbSync();
+    };
+    SyncService.instance.startAdbMonitor();
+  }
   runApp(const MyApp());
 }
 

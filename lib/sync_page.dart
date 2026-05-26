@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'sync_service.dart';
 
@@ -83,13 +85,13 @@ class _SyncPageState extends State<SyncPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _doSync([String? host]) async {
+  Future<void> _doSync([String? host, int? port]) async {
     if (_isSyncing) return;
     setState(() => _isSyncing = true);
     try {
       final h = host ?? _hostController.text.trim();
-      final port = int.tryParse(_portController.text) ?? 9090;
-      await _sync.fullSync(h, port);
+      final p = port ?? int.tryParse(_portController.text) ?? 9090;
+      await _sync.fullSync(h, p);
     } catch (_) {
       // Error already handled in service
     }
@@ -106,20 +108,18 @@ class _SyncPageState extends State<SyncPage> {
     }
   }
 
-  Future<void> _setupAdbReverse() async {
-    final port = int.tryParse(_portController.text) ?? 9090;
-    final ok = await _sync.setupAdbReverse(port: port);
+  Future<void> _setupAdbForward() async {
+    final ok = await _sync.setupAdbForward(localPort: 9091, remotePort: 9090);
     if (mounted) {
       setState(() => _adbReversed = ok);
       _adbDevicesText.value = ok
-          ? '端口映射成功：localhost:$port → PC:$port'
-          : '映射失败，请确认 ADB 已连接';
+          ? '端口转发成功：PC:9091 → 手机:9090'
+          : '转发失败，请确认 ADB 已连接';
     }
   }
 
-  Future<void> _removeAdbReverse() async {
-    final port = int.tryParse(_portController.text) ?? 9090;
-    await _sync.removeAdbReverse(port: port);
+  Future<void> _removeAdbForward() async {
+    await _sync.removeAdbForward(localPort: 9091);
     if (mounted) {
       setState(() => _adbReversed = false);
       _adbDevicesText.value =
@@ -246,67 +246,69 @@ class _SyncPageState extends State<SyncPage> {
             ),
           ),
 
-          const SizedBox(height: 24),
+          if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) ...[
+            const SizedBox(height: 24),
 
-          // USB sync section
-          _sectionHeader('USB 数据线同步'),
-          const SizedBox(height: 8),
-          Container(
-            decoration: BoxDecoration(
-              border: Border.all(color: _outlineVariant),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text('ADB 设备',
-                        style: TextStyle(
-                            fontSize: 14,
-                            color: _onSurface,
-                            fontWeight: FontWeight.w500)),
-                    const Spacer(),
-                    _smallBtn('检测', _detectAdbDevices),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                ValueListenableBuilder<String>(
-                  valueListenable: _adbDevicesText,
-                  builder: (context, val, _) => Text(val,
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: _adbDevices.isNotEmpty
-                              ? _onSurfaceVariant
-                              : _outline)),
-                ),
-                if (_adbDevices.isNotEmpty) ...[
-                  const SizedBox(height: 10),
+            // USB sync section
+            _sectionHeader('USB 数据线同步'),
+            const SizedBox(height: 8),
+            Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: _outlineVariant),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Row(
                     children: [
-                      _smallBtn(
-                        _adbReversed
-                            ? '已映射'
-                            : '设置端口映射',
-                        _adbReversed ? null : _setupAdbReverse,
-                      ),
-                      const SizedBox(width: 8),
-                      if (_adbReversed)
-                        _smallBtn('取消映射', _removeAdbReverse),
-                      const SizedBox(width: 8),
-                      if (_adbReversed)
-                        _smallBtn('同步',
-                            () => _doSync('127.0.0.1'),
-                            isPrimary: true),
+                      Text('ADB 设备',
+                          style: TextStyle(
+                              fontSize: 14,
+                              color: _onSurface,
+                              fontWeight: FontWeight.w500)),
+                      const Spacer(),
+                      _smallBtn('检测', _detectAdbDevices),
                     ],
                   ),
+                  const SizedBox(height: 8),
+                  ValueListenableBuilder<String>(
+                    valueListenable: _adbDevicesText,
+                    builder: (context, val, _) => Text(val,
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: _adbDevices.isNotEmpty
+                                ? _onSurfaceVariant
+                                : _outline)),
+                  ),
+                  if (_adbDevices.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        _smallBtn(
+                          _adbReversed
+                              ? '已映射'
+                              : '设置端口映射',
+                          _adbReversed ? null : _setupAdbForward,
+                        ),
+                        const SizedBox(width: 8),
+                        if (_adbReversed)
+                          _smallBtn('取消映射', _removeAdbForward),
+                        const SizedBox(width: 8),
+                        if (_adbReversed)
+                          _smallBtn('同步',
+                              () => _doSync('127.0.0.1', 9091),
+                              isPrimary: true),
+                      ],
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
 
-          const SizedBox(height: 24),
+            const SizedBox(height: 24),
+          ],
 
           // Client section
           _sectionHeader('连接设备'),

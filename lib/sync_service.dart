@@ -20,6 +20,14 @@ class SyncService {
   final ValueNotifier<String> messageNotifier = ValueNotifier('');
   final ValueNotifier<int> lastSyncTimeNotifier = ValueNotifier(0);
 
+  Process? _adbMonitorProcess;
+  final _knownAdbDevices = <String>{};
+  bool _adbSyncLock = false;
+  bool _adbSyncPending = false;
+  Timer? _adbDebounce;
+  final List<String> _adbPendingLines = [];
+  void Function(String host, int port)? onAdbDeviceConnected;
+
   bool get isServerRunning => _isServerRunning;
   int get port => _port;
 
@@ -58,6 +66,13 @@ class SyncService {
       }
     } catch (_) {}
     return ips;
+  }
+
+  bool isOwnAddress(String host) {
+    if (host == '127.0.0.1' || host == 'localhost' || host == '::1') {
+      return true;
+    }
+    return false;
   }
 
   String? get _adbPath {
@@ -111,6 +126,167 @@ class SyncService {
     }
   }
 
+  Future<bool> setupAdbForward({int localPort = 9091, int remotePort = 9090}) async {
+    try {
+      final result = await Process.run(
+          _adbPath!, ['forward', 'tcp:$localPort', 'tcp:$remotePort']);
+      return result.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> removeAdbForward({int localPort = 9091}) async {
+    try {
+      final result = await Process.run(
+          _adbPath!, ['forward', '--remove', 'tcp:$localPort']);
+      return result.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> startAdbMonitor() async {
+    if (_adbMonitorProcess != null) return;
+    try {
+      final adb = _adbPath;
+      if (adb == null) return;
+      _adbMonitorProcess = await Process.start(adb, ['track-devices']);
+      _knownAdbDevices.clear();
+      var isFirst = true;
+
+      _adbMonitorProcess!.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) {
+        _adbPendingLines.add(line);
+        _adbDebounce?.cancel();
+        _adbDebounce = Timer(const Duration(milliseconds: 80), () {
+          final lines = List<String>.from(_adbPendingLines);
+          _adbPendingLines.clear();
+          final output = lines.join('\n');
+          if (isFirst) {
+            isFirst = false;
+            _updateDeviceListInitial(output);
+          } else {
+            _updateDeviceList(output);
+          }
+        });
+      });
+
+      _adbMonitorProcess!.stderr
+          .transform(utf8.decoder)
+          .listen((_) {}); // ignore stderr
+
+      messageNotifier.value = 'ADB 监听已启动';
+    } catch (_) {}
+  }
+
+  void _updateDeviceListInitial(String output) {
+    final lines = output.split('\n');
+    for (final line in lines) {
+      if (line.trim().isNotEmpty && line.contains('\tdevice')) {
+        _knownAdbDevices.add(line.split('\t').first.trim());
+      }
+    }
+  }
+
+  void _updateDeviceList(String output) {
+    final currentIds = <String>{};
+    final lines = output.split('\n');
+    for (final line in lines) {
+      if (line.trim().isNotEmpty && line.contains('\tdevice')) {
+        currentIds.add(line.split('\t').first.trim());
+      }
+    }
+
+    for (final id in currentIds) {
+      if (!_knownAdbDevices.contains(id)) {
+        messageNotifier.value = '检测到 USB 设备: $id';
+        if (_adbSyncLock) {
+          _adbSyncPending = true;
+        } else {
+          _adbSyncPending = false;
+          _runAdbSync();
+        }
+      }
+    }
+
+    _knownAdbDevices.clear();
+    _knownAdbDevices.addAll(currentIds);
+  }
+
+  void _runAdbSync() {
+    onAdbDeviceConnected?.call('127.0.0.1', 9091);
+  }
+
+  void releaseAdbSyncLock() {
+    _adbSyncLock = false;
+    if (_adbSyncPending) {
+      _adbSyncPending = false;
+      _adbSyncLock = true;
+      _runAdbSync();
+    }
+  }
+
+  Future<bool> tryUsbSync() async {
+    if (_adbSyncLock) return false;
+    _adbSyncLock = true;
+    try {
+      final devices = await getAdbDevices();
+      if (devices.isEmpty) {
+        messageNotifier.value = 'USB: 未检测到设备';
+        return false;
+      }
+      // Clean up any stale forward first
+      await removeAdbForward(localPort: 9091);
+      final ok = await setupAdbForward(localPort: 9091, remotePort: 9090);
+      if (!ok) {
+        messageNotifier.value = 'USB: 端口转发失败';
+        return false;
+      }
+      try {
+        // Give the forward time to establish
+        await Future.delayed(const Duration(milliseconds: 500));
+        // Retry connection check up to 3 times
+        for (int i = 0; i < 3; i++) {
+          try {
+            final client = HttpClient();
+            final req = await client.getUrl(
+              Uri(scheme: 'http', host: '127.0.0.1', port: 9091, path: '/sync/status'),
+            );
+            final res = await req.close().timeout(const Duration(seconds: 3));
+            client.close();
+            if (res.statusCode == 200) break;
+          } catch (_) {
+            if (i == 2) {
+              messageNotifier.value = 'USB: 无法连接到手机服务';
+              return false;
+            }
+            await Future.delayed(const Duration(milliseconds: 500));
+          }
+        }
+        await fullSync('127.0.0.1', 9091, saveConnection: false);
+        return true;
+      } finally {
+        await removeAdbForward(localPort: 9091);
+      }
+    } catch (e) {
+      messageNotifier.value = 'USB 同步失败: $e';
+      return false;
+    } finally {
+      releaseAdbSyncLock();
+    }
+  }
+
+  void stopAdbMonitor() {
+    _adbDebounce?.cancel();
+    _adbDebounce = null;
+    _adbPendingLines.clear();
+    _adbMonitorProcess?.kill();
+    _adbMonitorProcess = null;
+    _knownAdbDevices.clear();
+  }
   Future<int> _getLastSyncTime() async {
     final db = await DatabaseHelper.instance.database;
     final result = await db.query(
@@ -246,11 +422,10 @@ class SyncService {
     }
   }
 
-  Future<int> fullSync(String host, int port) async {
+  Future<int> fullSync(String host, int port, {bool saveConnection = true}) async {
     statusNotifier.value = SyncStatus.connecting;
     messageNotifier.value = '正在检查连接...';
     try {
-      // Check connectivity
       final client = HttpClient();
       final statusReq = await client.getUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/status'),
@@ -270,7 +445,9 @@ class SyncService {
 
     await pushTo(host, port);
     await pullFrom(host, port);
-    await saveLastConnection(host, port);
+    if (saveConnection) {
+      await saveLastConnection(host, port);
+    }
     statusNotifier.value = SyncStatus.idle;
     return 0;
   }
