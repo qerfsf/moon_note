@@ -187,6 +187,7 @@ class _HomePageState extends State<HomePage> {
   String? _selectedNoteId;
   String _selectedNoteTitle = '';
   bool _isMouseDown = false;
+  Offset? _dragStart;
 
   bool get _isDesktop => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
@@ -243,28 +244,30 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _trySync() async {
+    bool synced = false;
+    // Try WiFi sync first
     try {
       final info = await SyncService.instance.getLastConnection();
       final host = info['host'];
       final port = int.tryParse(info['port'] ?? '') ?? 9090;
-      if (host == null) return;
-      await SyncService.instance.fullSync(host, port);
+      if (host != null && !SyncService.instance.isOwnAddress(host)) {
+        await SyncService.instance.fullSync(host, port);
+        synced = true;
+      }
+    } catch (_) {}
+    // On desktop, also try USB sync
+    if (!synced && _isDesktop) {
+      try {
+        synced = await SyncService.instance.tryUsbSync();
+      } catch (_) {}
+    }
+    if (synced) {
       await _loadNodes();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('同步完成'),
             duration: Duration(seconds: 1),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('同步失败: $e'),
-            duration: const Duration(seconds: 1),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -1341,8 +1344,28 @@ class _HomePageState extends State<HomePage> {
         if (mounted) setState(() => _hoveredId = null);
       },
       cursor: _isSelecting ? SystemMouseCursors.click : SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: () async {
+      child: Listener(
+        onPointerDown: (d) => _dragStart = d.localPosition,
+        onPointerUp: (d) {
+          if (_dragStart == null) return;
+          final dx = d.localPosition.dx - _dragStart!.dx;
+          final dy = (d.localPosition.dy - _dragStart!.dy).abs();
+          _dragStart = null;
+          // Only treat as swipe if horizontal movement is significant and vertical is small
+          if (dx.abs() > 30 && dy < dx.abs() * 0.5) {
+            if (dx > 0 && !_isSelecting && !isFolder) {
+              setState(() {
+                _isSelecting = true;
+                _selectedIds.add(nodeId);
+              });
+              return;
+            } else if (dx < 0 && !_isSelecting && !isFolder && !isSystem) {
+              setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
+              _deleteNode(node);
+              return;
+            }
+          }
+          // Otherwise treat as tap
           if (_isSelecting) {
             _toggleSelection(nodeId);
           } else if (isFolder) {
@@ -1358,28 +1381,13 @@ class _HomePageState extends State<HomePage> {
             });
           }
         },
-        onHorizontalDragEnd: (details) {
-          if (_isSelecting || isFolder) return;
-          if (details.primaryVelocity == null) return;
-          final dx = details.primaryVelocity!;
-          if (dx > 300) {
-            // Swipe right → enter multi-select
-            setState(() {
-              _isSelecting = true;
-              _selectedIds.add(nodeId);
-            });
-          } else if (dx < -300 && !isSystem) {
-            // Swipe left → delete
-            setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
-            _deleteNode(node);
-          }
-        },
-        onSecondaryTapUp: (d) {
-          if (!_isSelecting) {
-            _showDesktopContextMenu(node, d.globalPosition);
-          }
-        },
-        child: Container(
+        child: GestureDetector(
+          onSecondaryTapUp: (d) {
+            if (!_isSelecting) {
+              _showDesktopContextMenu(node, d.globalPosition);
+            }
+          },
+          child: Container(
           decoration: BoxDecoration(
             color: isHovered ? _bgHover : Colors.transparent,
             border: Border(
@@ -1478,6 +1486,7 @@ class _HomePageState extends State<HomePage> {
             ],
           ),
         ),
+      ),
       ),
     );
   }
@@ -2064,7 +2073,6 @@ class _HomePageState extends State<HomePage> {
                   final isSelected = _selectedIds.contains(nodeId);
 
                   final isSystem = (node['is_system'] as int) == 1;
-                  Offset? _dragStart;
                   return Listener(
                     onPointerDown: (d) => _dragStart = d.localPosition,
                     onPointerUp: (d) {
