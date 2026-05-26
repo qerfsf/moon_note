@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'main.dart';
 import 'database.dart';
 import 'recycle_bin_page.dart';
+import 'about_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -96,15 +97,8 @@ class _SettingsPageState extends State<SettingsPage> {
           _tile(cs, Icons.info_outline, '关于 Moon Note',
               subtitle: '版本 1.0.0',
               onTap: () {
-                showAboutDialog(
-                  context: context,
-                  applicationName: 'Moon Note',
-                  applicationVersion: '1.0.0',
-                  applicationIcon: const Icon(Icons.edit_note, size: 40),
-                  children: [
-                    const Text('一款简洁的 Notion 风格笔记应用。'),
-                  ],
-                );
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const AboutPage()));
               }),
         ],
       ),
