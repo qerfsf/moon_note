@@ -16,7 +16,7 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 2, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 5, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
@@ -95,6 +95,24 @@ class DatabaseHelper {
       await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id, is_deleted)');
       await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_modified ON nodes(modified_at)');
       await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type, is_deleted)');
+    }
+    if (oldVersion < 5) {
+      // Recover from any failed FTS5 migration (v3/v4)
+      await db.execute('DROP TABLE IF EXISTS fts_content');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS fts_content (
+          note_id TEXT PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT '',
+          content TEXT NOT NULL DEFAULT ''
+        )
+      ''');
+      await db.rawInsert('''
+        INSERT OR IGNORE INTO fts_content(note_id, title, content)
+        SELECT n.id, n.title, COALESCE(nc.content, '')
+        FROM nodes n
+        LEFT JOIN note_content nc ON nc.note_id = n.id
+        WHERE n.type = 'note' AND n.is_deleted = 0
+      ''');
     }
   }
 

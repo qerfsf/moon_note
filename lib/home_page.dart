@@ -5,6 +5,10 @@ import 'recycle_bin_page.dart';
 import 'settings_page.dart';
 
 class _NoteSearchDelegate extends SearchDelegate<String> {
+  final Map<String, List<Map<String, dynamic>>> _cache = {};
+  static const _maxCacheSize = 20;
+  static const _debounceMs = 200;
+
   @override
   String get searchFieldLabel => '搜索笔记...';
 
@@ -66,7 +70,7 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
     }
 
     return FutureBuilder<List<Map<String, dynamic>>>(
-      future: _search(query),
+      future: _searchWithDebounce(query),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return Center(child: CircularProgressIndicator());
@@ -128,6 +132,19 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
     );
   }
 
+  Future<List<Map<String, dynamic>>> _searchWithDebounce(String keyword) async {
+    await Future.delayed(const Duration(milliseconds: _debounceMs));
+    if (keyword != query) return [];
+    if (_cache.containsKey(keyword)) return _cache[keyword]!;
+
+    final results = await _search(keyword);
+    if (_cache.length >= _maxCacheSize) {
+      _cache.remove(_cache.keys.first);
+    }
+    _cache[keyword] = results;
+    return results;
+  }
+
   Future<List<Map<String, dynamic>>> _search(String keyword) async {
     final db = await DatabaseHelper.instance.database;
     final like = '%$keyword%';
@@ -187,8 +204,10 @@ class _HomePageState extends State<HomePage> {
     final db = await DatabaseHelper.instance.database;
     final nodes = (await db.query(
       'nodes',
-      where: 'parent_id IS ? AND is_deleted = 0',
-      whereArgs: [_currentFolderId],
+      where: _currentFolderId == null
+          ? 'parent_id IS NULL AND is_deleted = 0'
+          : 'parent_id = ? AND is_deleted = 0',
+      whereArgs: _currentFolderId == null ? null : [_currentFolderId],
       orderBy: 'is_pinned DESC, pin_order ASC, $_sortField $_sortDir',
     )).toList();
     final reminders = await db.query(
@@ -1236,7 +1255,21 @@ class _HomePageState extends State<HomePage> {
                   final isSelected = _selectedIds.contains(nodeId);
 
                   final isSystem = (node['is_system'] as int) == 1;
-                  return Dismissible(
+                  Offset? _dragStart;
+                  return Listener(
+                    onPointerDown: (d) => _dragStart = d.localPosition,
+                    onPointerUp: (d) {
+                      if (_dragStart == null || _isSelecting) return;
+                      final dx = d.localPosition.dx - _dragStart!.dx;
+                      if (dx > 40) {
+                        setState(() {
+                          _isSelecting = true;
+                          _selectedIds.add(nodeId);
+                        });
+                      }
+                      _dragStart = null;
+                    },
+                    child: Dismissible(
                     key: Key(nodeId),
                     direction: _isSelecting
                         ? DismissDirection.none
@@ -1246,7 +1279,9 @@ class _HomePageState extends State<HomePage> {
                         const {DismissDirection.endToStart: 0.2},
                     confirmDismiss: (direction) async {
                       if (isSystem) return false;
-                      await _deleteNode(node);
+                      setState(() => _nodes.removeWhere(
+                          (n) => n['id'] == node['id']));
+                      _deleteNode(node);
                       return true;
                     },
                     background: const SizedBox.shrink(),
@@ -1368,6 +1403,7 @@ class _HomePageState extends State<HomePage> {
                           ],
                         ),
                       ),
+                    ),
                     ),
                   );
                 },
