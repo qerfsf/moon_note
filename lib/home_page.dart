@@ -1,9 +1,13 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import 'database.dart';
 import 'note_page.dart';
 import 'recycle_bin_page.dart';
 import 'settings_page.dart';
+import 'notification_service.dart';
+import 'sync_service.dart';
 
 class _NoteSearchDelegate extends SearchDelegate<String> {
   final Map<String, List<Map<String, dynamic>>> _cache = {};
@@ -179,6 +183,11 @@ class _HomePageState extends State<HomePage> {
   String _sortField = 'modified_at';
   String _sortDir = 'DESC';
   DateTime? _lastBackPress;
+  String? _hoveredId;
+  String? _selectedNoteId;
+  String _selectedNoteTitle = '';
+
+  bool get _isDesktop => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
   Color get _textPrimary => Theme.of(context).colorScheme.onSurface;
   Color get _textSecondary => Theme.of(context).colorScheme.onSurfaceVariant;
@@ -188,10 +197,16 @@ class _HomePageState extends State<HomePage> {
   Color get _red => Theme.of(context).colorScheme.error;
   Color get _accent => Theme.of(context).colorScheme.onSurface;
 
+  Future<void> _refresh() async {
+    await _loadNodes();
+    await _trySync();
+  }
+
   @override
   void initState() {
     super.initState();
-    _loadNodes();
+    _refresh();
+    NotificationService.instance.onQuickNote = _showQuickNoteDialog;
   }
 
   void _exitSelection() {
@@ -223,6 +238,36 @@ class _HomePageState extends State<HomePage> {
 
     if (_currentFolderId == null) {
       _checkSystemFolders(nodes);
+    }
+  }
+
+  Future<void> _trySync() async {
+    try {
+      final info = await SyncService.instance.getLastConnection();
+      final host = info['host'];
+      final port = int.tryParse(info['port'] ?? '') ?? 9090;
+      if (host == null) return;
+      await SyncService.instance.fullSync(host, port);
+      await _loadNodes();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('同步完成'),
+            duration: Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('同步失败: $e'),
+            duration: const Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 
@@ -324,8 +369,118 @@ class _HomePageState extends State<HomePage> {
         'content': '',
       });
       await _loadNodes();
+      if (_isDesktop && !isJournal) {
+        setState(() {
+          _selectedNoteId = id;
+          _selectedNoteTitle = title;
+        });
+      }
     } catch (e) {
       print('创建笔记错误: $e');
+    }
+  }
+
+  Future<void> _showQuickNoteDialog() async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('快速记录',
+            style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(ctx).colorScheme.onSurface)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 6,
+          minLines: 3,
+          style: TextStyle(
+              fontSize: 15, color: Theme.of(ctx).colorScheme.onSurface),
+          decoration: InputDecoration(
+            hintText: '输入内容...',
+            hintStyle: TextStyle(
+                fontSize: 15,
+                color: Theme.of(ctx).colorScheme.outline),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(
+                  color: Theme.of(ctx).colorScheme.outlineVariant),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(
+                  color: Theme.of(ctx).colorScheme.outlineVariant),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(
+                  color:
+                      Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  width: 1.5),
+            ),
+            contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12, vertical: 10),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('取消',
+                style: TextStyle(
+                    fontSize: 14,
+                    color:
+                        Theme.of(ctx).colorScheme.outline)),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(ctx, controller.text.trim()),
+            child: Text('保存',
+                style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(ctx).colorScheme.onSurface)),
+          ),
+        ],
+      ),
+    );
+
+    if (result == null || result.isEmpty) return;
+
+    try {
+      final db = await DatabaseHelper.instance.database;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final id = now.toString();
+      final firstLine = result.split('\n').first;
+      final title = firstLine.isEmpty ? '未命名' : firstLine;
+      await db.insert('nodes', {
+        'id': id,
+        'type': 'note',
+        'parent_id': null,
+        'title': title,
+        'sort_order': now.toDouble(),
+        'is_pinned': 0,
+        'pin_order': 0,
+        'is_expanded': 0,
+        'is_deleted': 0,
+        'is_system': 0,
+        'created_at': now,
+        'modified_at': now,
+      });
+      await db.insert('note_content', {
+        'note_id': id,
+        'content': result,
+        'modified_at': now,
+      });
+      await db.insert('fts_content', {
+        'note_id': id,
+        'title': title,
+        'content': result,
+      });
+      if (_currentFolderId == null && mounted) {
+        await _loadNodes();
+      }
+    } catch (e) {
+      print('快速记录错误: $e');
     }
   }
 
@@ -375,39 +530,17 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _deleteNode(Map<String, dynamic> node) async {
     if ((node['is_system'] as int) == 1) return;
+    if (_selectedNoteId == node['id']) {
+      setState(() {
+        _selectedNoteId = null;
+        _selectedNoteTitle = '';
+      });
+    }
     final db = await DatabaseHelper.instance.database;
-
-    if (node['type'] == 'note') {
-      final contentRows = await db.query(
-        'note_content',
-        where: 'note_id = ?',
-        whereArgs: [node['id']],
-      );
-      final content = contentRows.isNotEmpty
-          ? (contentRows.first['content'] as String? ?? '').trim()
-          : '';
-      if ((node['title'] == '未命名' || node['title'] == '') && content.isEmpty) {
-        await _permanentDelete(db, node);
-        return;
-      }
-    }
-
-    if (node['type'] == 'folder') {
-      final children = await db.query(
-        'nodes',
-        where: 'parent_id = ? AND is_deleted = 0',
-        whereArgs: [node['id']],
-      );
-      if (children.isEmpty) {
-        await _permanentDelete(db, node);
-        return;
-      }
-    }
-
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.update(
       'nodes',
-      {'is_deleted': 1, 'deleted_at': now},
+      {'is_deleted': 1, 'deleted_at': now, 'modified_at': now},
       where: 'id = ?',
       whereArgs: [node['id']],
     );
@@ -451,7 +584,7 @@ class _HomePageState extends State<HomePage> {
     for (final id in _selectedIds) {
       await db.update(
         'nodes',
-        {'is_deleted': 1, 'deleted_at': now},
+        {'is_deleted': 1, 'deleted_at': now, 'modified_at': now},
         where: 'id = ?',
         whereArgs: [id],
       );
@@ -1034,6 +1167,594 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  List<PopupMenuEntry<String>> _buildPopupMenuItems(Map<String, dynamic> node) {
+    final items = <PopupMenuEntry<String>>[];
+    final isFolder = node['type'] == 'folder';
+    final isSystem = (node['is_system'] as int) == 1;
+
+    items.add(PopupMenuItem<String>(
+      value: 'pin',
+      child: Row(
+        children: [
+          Icon(
+            (node['is_pinned'] as int) == 1
+                ? Icons.push_pin
+                : Icons.push_pin_outlined,
+            size: 18,
+            color: _textSecondary,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              (node['is_pinned'] as int) == 1 ? '取消置顶' : '置顶',
+              style: TextStyle(fontSize: 14, color: _textPrimary),
+            ),
+          ),
+        ],
+      ),
+      onTap: () => _togglePin(node),
+    ));
+
+    if (!isSystem) {
+      items.add(PopupMenuItem<String>(
+        value: 'rename',
+        child: Row(
+          children: [
+            Icon(Icons.edit_outlined, size: 18, color: _textSecondary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('重命名',
+                  style: TextStyle(fontSize: 14, color: _textPrimary)),
+            ),
+          ],
+        ),
+        onTap: () => _renameNode(node),
+      ));
+    }
+
+    items.add(PopupMenuItem<String>(
+      value: 'move',
+      child: Row(
+        children: [
+          Icon(Icons.drive_file_move_outlined,
+              size: 18, color: _textSecondary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text('移动到',
+                style: TextStyle(fontSize: 14, color: _textPrimary)),
+          ),
+        ],
+      ),
+      onTap: () => _moveNode(node),
+    ));
+
+    items.add(PopupMenuItem<String>(
+      value: 'copy',
+      child: Row(
+        children: [
+          Icon(Icons.copy_outlined, size: 18, color: _textSecondary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text('复制',
+                style: TextStyle(fontSize: 14, color: _textPrimary)),
+          ),
+        ],
+      ),
+      onTap: () => _copyNode(node),
+    ));
+
+    if (!isFolder) {
+      items.add(PopupMenuItem<String>(
+        value: 'reminder',
+        child: Row(
+          children: [
+            Icon(
+              _reminderNoteIds.contains(node['id'])
+                  ? Icons.notifications_active
+                  : Icons.notifications_outlined,
+              size: 18,
+              color: _textSecondary,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                _reminderNoteIds.contains(node['id']) ? '修改提醒' : '设置提醒',
+                style: TextStyle(fontSize: 14, color: _textPrimary),
+              ),
+            ),
+          ],
+        ),
+        onTap: () => _showReminderDialog(node),
+      ));
+    }
+
+    items.add(PopupMenuItem<String>(
+      value: 'select',
+      child: Row(
+        children: [
+          Icon(Icons.checklist_outlined, size: 18, color: _textSecondary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text('多选',
+                style: TextStyle(fontSize: 14, color: _textPrimary)),
+          ),
+        ],
+      ),
+      onTap: () {
+        setState(() {
+          _isSelecting = true;
+          _selectedIds.add(node['id'] as String);
+        });
+      },
+    ));
+
+    if (!isSystem) {
+      items.add(PopupMenuItem<String>(
+        value: 'delete',
+        child: Row(
+          children: [
+            Icon(Icons.delete_outline, size: 18, color: _red),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('删除',
+                  style: TextStyle(fontSize: 14, color: _red)),
+            ),
+          ],
+        ),
+        onTap: () => _deleteNode(node),
+      ));
+    }
+
+    return items;
+  }
+
+  void _showDesktopContextMenu(
+      Map<String, dynamic> node, Offset position) {
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+          position.dx, position.dy, position.dx + 1, position.dy + 1),
+      color: Theme.of(context).colorScheme.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      items: _buildPopupMenuItems(node),
+    );
+  }
+
+  Widget _buildDesktopRow(Map<String, dynamic> node) {
+    final nodeId = node['id'] as String;
+    final isFolder = node['type'] == 'folder';
+    final isSelected = _selectedIds.contains(nodeId);
+    final isSystem = (node['is_system'] as int) == 1;
+    final isHovered = _hoveredId == nodeId;
+
+    return MouseRegion(
+      onEnter: (_) {
+        if (mounted) setState(() => _hoveredId = nodeId);
+      },
+      onExit: (_) {
+        if (mounted) setState(() => _hoveredId = null);
+      },
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () async {
+          if (_isSelecting) {
+            _toggleSelection(nodeId);
+          } else if (isFolder) {
+            setState(() {
+              _currentFolderId = node['id'];
+              _currentFolderTitle = node['title'];
+            });
+            _loadNodes();
+          } else {
+            setState(() {
+              _selectedNoteId = node['id'];
+              _selectedNoteTitle = node['title'];
+            });
+          }
+        },
+        onSecondaryTapUp: (d) {
+          if (!_isSelecting) {
+            _showDesktopContextMenu(node, d.globalPosition);
+          }
+        },
+        child: Container(
+          decoration: BoxDecoration(
+            color: isHovered ? _bgHover : Colors.transparent,
+            border: Border(
+                bottom: BorderSide(color: _borderLight, width: 0.5)),
+          ),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              if (_isSelecting)
+                Padding(
+                  padding: const EdgeInsets.only(right: 10),
+                  child: Icon(
+                    isSelected ? Icons.check_circle : Icons.circle_outlined,
+                    size: 20,
+                    color: isSelected ? _accent : _borderLight,
+                  ),
+                )
+              else
+                Icon(
+                  isFolder ? Icons.folder_outlined : Icons.article_outlined,
+                  size: 18,
+                  color: _textTertiary,
+                ),
+              if (!_isSelecting) const SizedBox(width: 10),
+              if (!_isSelecting && (node['is_pinned'] as int) == 1)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child:
+                      Icon(Icons.push_pin, size: 17, color: _textSecondary),
+                ),
+              if (!_isSelecting &&
+                  !isFolder &&
+                  _reminderNoteIds.contains(nodeId))
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Icon(Icons.notifications_active,
+                      size: 14, color: _textSecondary),
+                ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      node['title'],
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: _textPrimary,
+                        height: 1.4,
+                      ),
+                    ),
+                    Text(
+                      _formatDate(node['modified_at'] as int),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: _textTertiary,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              AnimatedOpacity(
+                opacity: isHovered && !_isSelecting ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 150),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _desktopActionBtn(
+                      (node['is_pinned'] as int) == 1
+                          ? Icons.push_pin
+                          : Icons.push_pin_outlined,
+                      () => _togglePin(node),
+                    ),
+                    if (!isSystem)
+                      _desktopActionBtn(
+                        Icons.delete_outline,
+                        () {
+                          setState(() => _nodes.removeWhere(
+                              (n) => n['id'] == node['id']));
+                          _deleteNode(node);
+                        },
+                        color: _red,
+                      ),
+                    _desktopActionBtn(
+                      Icons.more_horiz,
+                      () {},
+                      onTapDown: (d) =>
+                          _showDesktopContextMenu(node, d.globalPosition),
+                    ),
+                  ],
+                ),
+              ),
+              if (!_isSelecting && isFolder && !isHovered)
+                Icon(Icons.chevron_right, size: 16, color: _borderLight),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _desktopActionBtn(IconData icon, VoidCallback? onTap,
+      {Color? color, void Function(TapDownDetails)? onTapDown}) {
+    return GestureDetector(
+      onTap: onTapDown == null ? onTap : null,
+      onTapDown: onTapDown,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Icon(icon, size: 18, color: color ?? _textTertiary),
+      ),
+    );
+  }
+
+  Widget _buildDesktopLayout() {
+    return Container(
+      color: Theme.of(context).colorScheme.surface,
+      child: Row(
+      children: [
+        SizedBox(
+          width: 320,
+          child: Scaffold(
+            backgroundColor: Theme.of(context).colorScheme.surface,
+            appBar: AppBar(
+              backgroundColor: Theme.of(context).colorScheme.surface,
+              elevation: 0,
+              surfaceTintColor: Colors.transparent,
+              scrolledUnderElevation: 0,
+              leading: _isSelecting
+                  ? IconButton(
+                      icon: Icon(Icons.close,
+                          color: Theme.of(context).colorScheme.onSurface,
+                          size: 20),
+                      onPressed: _exitSelection,
+                    )
+                  : _currentFolderId != null
+                      ? IconButton(
+                          icon: Icon(Icons.arrow_back,
+                              color: Theme.of(context).colorScheme.onSurface,
+                              size: 20),
+                          onPressed: _goBack,
+                        )
+                      : null,
+              title: _isSelecting
+                  ? Text(
+                      '已选 ${_selectedIds.length} 项',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 17,
+                      ),
+                    )
+                  : Text(
+                      _currentFolderTitle,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 17,
+                      ),
+                    ),
+              actions: _isSelecting
+                  ? null
+                  : [
+                      if (_currentFolderId == null)
+                        IconButton(
+                          icon: Icon(Icons.settings_outlined,
+                              size: 20,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant),
+                          tooltip: '设置',
+                          onPressed: () async {
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      const SettingsPage()),
+                            );
+                            _loadNodes();
+                          },
+                        ),
+                      IconButton(
+                        icon: Icon(Icons.refresh,
+                            size: 20,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant),
+                        tooltip: '刷新并同步',
+                        onPressed: _refresh,
+                      ),
+                      if (_currentFolderId == null)
+                        IconButton(
+                          icon: Icon(Icons.delete_outline,
+                              size: 20,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant),
+                          tooltip: '回收站',
+                          onPressed: () async {
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      const RecycleBinPage()),
+                            );
+                            _loadNodes();
+                          },
+                        ),
+                      IconButton(
+                        icon: Icon(Icons.search,
+                            size: 20,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant),
+                        tooltip: '搜索',
+                        onPressed: () async {
+                          final noteId = await showSearch<String>(
+                            context: context,
+                            delegate: _NoteSearchDelegate(),
+                          );
+                          if (noteId != null &&
+                              noteId.isNotEmpty &&
+                              mounted) {
+                            final db =
+                                await DatabaseHelper.instance.database;
+                            final node = await db.query('nodes',
+                                where: 'id = ?',
+                                whereArgs: [noteId]);
+                            if (node.isNotEmpty && mounted) {
+                              setState(() {
+                                _selectedNoteId = noteId;
+                                _selectedNoteTitle =
+                                    node.first['title'] as String? ??
+                                        '';
+                              });
+                            }
+                          }
+                        },
+                      ),
+                      IconButton(
+                        icon: Icon(Icons.swap_vert,
+                            size: 20,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant),
+                        tooltip: '排序',
+                        onPressed: _showSortPicker,
+                      ),
+                    ],
+              bottom: PreferredSize(
+                preferredSize: const Size.fromHeight(0.5),
+                child: Divider(
+                    height: 0.5,
+                    thickness: 0.5,
+                    color: Theme.of(context).colorScheme.outlineVariant),
+              ),
+            ),
+            body: RefreshIndicator(
+                  onRefresh: _refresh,
+                  child: _nodes.isEmpty
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: [
+                            SizedBox(
+                              height: MediaQuery.of(context).size.height * 0.6,
+                              child: Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.edit_note,
+                                        size: 40, color: _borderLight),
+                                    const SizedBox(height: 10),
+                                    Text(
+                                      '点击 + 开始记录',
+                                      style: TextStyle(
+                                          color: _textTertiary, fontSize: 14),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : ListView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: EdgeInsets.zero,
+                          itemCount: _nodes.length,
+                          itemBuilder: (context, index) {
+                            final node = _nodes[index];
+                            return _buildDesktopRow(node);
+                          },
+                        ),
+                ),
+            floatingActionButton: _isSelecting
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FloatingActionButton.small(
+                        heroTag: 'batchmove',
+                        onPressed:
+                            _selectedIds.isNotEmpty ? _batchMove : null,
+                        backgroundColor: _bgHover,
+                        foregroundColor: _selectedIds.isNotEmpty
+                            ? _textSecondary
+                            : _textTertiary,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                        child: const Icon(Icons.drive_file_move_outlined,
+                            size: 20),
+                      ),
+                      const SizedBox(height: 6),
+                      FloatingActionButton(
+                        heroTag: 'batchdelete',
+                        onPressed:
+                            _selectedIds.isNotEmpty ? _batchDelete : null,
+                        backgroundColor: _selectedIds.isNotEmpty
+                            ? _red
+                            : _bgHover,
+                        foregroundColor: _selectedIds.isNotEmpty
+                            ? Colors.white
+                            : _textTertiary,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                        child: const Icon(Icons.delete_outline, size: 24),
+                      ),
+                    ],
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FloatingActionButton.small(
+                        heroTag: 'folder',
+                        onPressed: _createFolder,
+                        backgroundColor: _bgHover,
+                        foregroundColor: _textSecondary,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                        child:
+                            const Icon(Icons.folder_outlined, size: 20),
+                      ),
+                      const SizedBox(height: 6),
+                      FloatingActionButton(
+                        heroTag: 'note',
+                        onPressed: _createNote,
+                        backgroundColor: _textPrimary,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                        child: const Icon(Icons.add, size: 24),
+                      ),
+                    ],
+                  ),
+          ),
+        ),
+        VerticalDivider(
+          width: 1,
+          thickness: 1,
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
+        Expanded(child: _buildRightPanel()),
+      ],
+      ),
+    );
+  }
+
+  Widget _buildRightPanel() {
+    final cs = Theme.of(context).colorScheme;
+    if (_selectedNoteId == null) {
+      return Container(
+        color: cs.surface,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.edit_note, size: 48, color: _borderLight),
+              const SizedBox(height: 12),
+              Text(
+                '选择一条笔记开始编辑',
+                style: TextStyle(fontSize: 15, color: _textTertiary),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return NotePage(
+      key: ValueKey(_selectedNoteId),
+      noteId: _selectedNoteId!,
+      initialTitle: _selectedNoteTitle,
+      embedded: true,
+    );
+  }
+
   void _showSortPicker() {
     showModalBottomSheet(
       context: context,
@@ -1155,7 +1876,9 @@ class _HomePageState extends State<HomePage> {
           ),
         );
       },
-      child: Scaffold(
+      child: _isDesktop
+          ? _buildDesktopLayout()
+          : Scaffold(
         backgroundColor: Theme.of(context).colorScheme.surface,
         appBar: AppBar(
           backgroundColor: Theme.of(context).colorScheme.surface,
@@ -1239,17 +1962,25 @@ class _HomePageState extends State<HomePage> {
                         final node = await db.query('nodes',
                             where: 'id = ?', whereArgs: [noteId]);
                         if (node.isNotEmpty && mounted) {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => NotePage(
-                                noteId: noteId,
-                                initialTitle:
-                                    node.first['title'] as String? ?? '',
+                          if (_isDesktop) {
+                            setState(() {
+                              _selectedNoteId = noteId;
+                              _selectedNoteTitle =
+                                  node.first['title'] as String? ?? '';
+                            });
+                          } else {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => NotePage(
+                                  noteId: noteId,
+                                  initialTitle:
+                                      node.first['title'] as String? ?? '',
+                                ),
                               ),
-                            ),
-                          );
-                          _loadNodes();
+                            );
+                            _loadNodes();
+                          }
                         }
                       }
                     },
@@ -1269,26 +2000,40 @@ class _HomePageState extends State<HomePage> {
                 color: Theme.of(context).colorScheme.outlineVariant),
           ),
         ),
-        body: _nodes.isEmpty
-            ? Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
+        body: RefreshIndicator(
+          onRefresh: _refresh,
+          child: _nodes.isEmpty
+              ? ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
                   children: [
-                    Icon(Icons.edit_note, size: 40, color: _borderLight),
-                    const SizedBox(height: 10),
-                    Text(
-                      '点击 + 开始记录',
-                      style: TextStyle(color: _textTertiary, fontSize: 14),
+                    SizedBox(
+                      height: MediaQuery.of(context).size.height * 0.6,
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.edit_note, size: 40, color: _borderLight),
+                            const SizedBox(height: 10),
+                            Text(
+                              '点击 + 开始记录',
+                              style: TextStyle(color: _textTertiary, fontSize: 14),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ],
-                ),
-              )
-            : ListView.builder(
-                padding: EdgeInsets.zero,
-                itemCount: _nodes.length,
-                itemBuilder: (context, index) {
-                  final node = _nodes[index];
-                  final isFolder = node['type'] == 'folder';
+                )
+              : ListView.builder(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: EdgeInsets.zero,
+                  itemCount: _nodes.length,
+                  itemBuilder: (context, index) {
+                    final node = _nodes[index];
+                    if (_isDesktop) {
+                      return _buildDesktopRow(node);
+                    }
+                    final isFolder = node['type'] == 'folder';
                   final nodeId = node['id'] as String;
                   final isSelected = _selectedIds.contains(nodeId);
 
@@ -1446,6 +2191,7 @@ class _HomePageState extends State<HomePage> {
                   );
                 },
               ),
+          ),
         floatingActionButton: _isSelecting
             ? Column(
                 mainAxisSize: MainAxisSize.min,

@@ -1,6 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'database.dart';
 import 'home_page.dart';
+import 'notification_service.dart';
+import 'sync_service.dart';
 
 final ValueNotifier<ThemeMode> themeNotifier =
     ValueNotifier(ThemeMode.system);
@@ -94,8 +99,18 @@ ThemeData _theme(ColorScheme cs) => ThemeData(
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
   await DatabaseHelper.instance.database;
   await loadTheme();
+  await NotificationService.instance.init();
+  await NotificationService.instance.requestPermission();
+  await NotificationService.instance.showPersistent();
+  try {
+    await SyncService.instance.startServer();
+  } catch (_) {}
   runApp(const MyApp());
 }
 

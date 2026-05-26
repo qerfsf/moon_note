@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -7,11 +9,13 @@ import 'database.dart';
 class NotePage extends StatefulWidget {
   final String noteId;
   final String initialTitle;
+  final bool embedded;
 
   const NotePage({
     super.key,
     required this.noteId,
     required this.initialTitle,
+    this.embedded = false,
   });
 
   @override
@@ -19,6 +23,9 @@ class NotePage extends StatefulWidget {
 }
 
 class _NotePageState extends State<NotePage> {
+  bool get _isDesktop =>
+      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
   Color get _textPrimary => Theme.of(context).colorScheme.onSurface;
   Color get _textTertiary => Theme.of(context).colorScheme.outline;
   Color get _borderLight => Theme.of(context).colorScheme.outlineVariant;
@@ -632,92 +639,131 @@ class _NotePageState extends State<NotePage> {
   }
 
   Widget _buildEditor() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _titleController,
-            focusNode: _titleFocusNode,
-            textInputAction: TextInputAction.next,
-            onSubmitted: (_) => _contentFocusNode.requestFocus(),
-            decoration: InputDecoration(
-              hintText: '无标题',
-              border: InputBorder.none,
-              hintStyle: TextStyle(
-                color: _textTertiary,
-                fontWeight: FontWeight.w600,
-                fontSize: _fontSize + 5,
-                height: 1.3,
-              ),
-            ),
-            style: TextStyle(
-              fontSize: _fontSize + 5,
-              fontWeight: FontWeight.w600,
-              color: _textPrimary,
-              height: 1.3,
-            ),
-            cursorColor: _textPrimary,
-            onChanged: (_) => _scheduleSave(),
-          ),
-          const SizedBox(height: 4),
-          SizedBox(
-            height: 44,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
+    return Column(
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _toolbarBtn(Icons.undo, '', '', onTap: _undoStack.length > 1 ? _undo : null),
-                _toolbarBtn(Icons.redo, '', '', onTap: _redoStack.isNotEmpty ? _redo : null),
-                const SizedBox(width: 8),
-                _toolbarBtn(Icons.format_bold, '**', '**'),
-                _toolbarBtn(Icons.format_italic, '*', '*'),
-                _toolbarBtn(Icons.strikethrough_s, '~~', '~~'),
-                const SizedBox(width: 8),
-                _toolbarBtn(Icons.title, '# ', ''),
-                _toolbarBtn(Icons.format_size, '## ', ''),
-                const SizedBox(width: 8),
-                _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
-                _toolbarBtn(Icons.checklist, '- [ ] ', ''),
-                const SizedBox(width: 8),
-                _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
-                const SizedBox(width: 8),
-                _toolbarBtn(Icons.text_decrease, '', '',
-                    onTap: _decreaseFont),
-                _toolbarBtn(Icons.text_increase, '', '',
-                    onTap: _increaseFont),
+                TextField(
+                  controller: _titleController,
+                  focusNode: _titleFocusNode,
+                  textInputAction: TextInputAction.next,
+                  onSubmitted: (_) => _contentFocusNode.requestFocus(),
+                  decoration: InputDecoration(
+                    hintText: '无标题',
+                    border: InputBorder.none,
+                    hintStyle: TextStyle(
+                      color: _textTertiary,
+                      fontWeight: FontWeight.w600,
+                      fontSize: _fontSize + 5,
+                      height: 1.3,
+                    ),
+                  ),
+                  style: TextStyle(
+                    fontSize: _fontSize + 5,
+                    fontWeight: FontWeight.w600,
+                    color: _textPrimary,
+                    height: 1.3,
+                  ),
+                  cursorColor: _textPrimary,
+                  onChanged: (_) => _scheduleSave(),
+                ),
+                const SizedBox(height: 4),
+                SizedBox(
+                  height: 44,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    children: [
+                      _toolbarBtn(Icons.undo, '', '', onTap: _undoStack.length > 1 ? _undo : null),
+                      _toolbarBtn(Icons.redo, '', '', onTap: _redoStack.isNotEmpty ? _redo : null),
+                      const SizedBox(width: 8),
+                      _toolbarBtn(Icons.format_bold, '**', '**'),
+                      _toolbarBtn(Icons.format_italic, '*', '*'),
+                      _toolbarBtn(Icons.strikethrough_s, '~~', '~~'),
+                      const SizedBox(width: 8),
+                      _toolbarBtn(Icons.title, '# ', ''),
+                      _toolbarBtn(Icons.format_size, '## ', ''),
+                      const SizedBox(width: 8),
+                      _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
+                      _toolbarBtn(Icons.checklist, '- [ ] ', ''),
+                      const SizedBox(width: 8),
+                      _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
+                      _toolbarBtn(Icons.search, '', '', onTap: _openFind),
+                      const SizedBox(width: 8),
+                      _toolbarBtn(Icons.text_decrease, '', '',
+                          onTap: _decreaseFont),
+                      _toolbarBtn(Icons.text_increase, '', '',
+                          onTap: _increaseFont),
+                      const SizedBox(width: 8),
+                      _toolbarBtn(
+                        _isPreviewing
+                            ? Icons.edit_outlined
+                            : Icons.visibility_outlined,
+                        '', '',
+                        onTap: () {
+                          if (!_isPreviewing) _doSave();
+                          setState(() => _isPreviewing = !_isPreviewing);
+                          _saveViewMode();
+                        },
+                      ),
+                      if (widget.embedded)
+                        _toolbarBtn(Icons.content_copy, '', '',
+                            onTap: _copyLink),
+                    ],
+                  ),
+                ),
+                Divider(height: 1, thickness: 0.5, color: _borderLight),
+                const SizedBox(height: 6),
+                Expanded(
+                  child: TextField(
+                    controller: _contentController,
+                    focusNode: _contentFocusNode,
+                    maxLines: null,
+                    expands: true,
+                    keyboardType: TextInputType.multiline,
+                    decoration: InputDecoration(
+                      hintText: '开始写点什么...',
+                      border: InputBorder.none,
+                      hintStyle: TextStyle(
+                        color: _textTertiary,
+                        fontSize: _fontSize,
+                        height: 1.7,
+                      ),
+                    ),
+                    style: TextStyle(
+                      fontSize: _fontSize,
+                      color: _textPrimary,
+                      height: 1.7,
+                    ),
+                    cursorColor: _textPrimary,
+                    onChanged: (_) => _onContentChanged(),
+                  ),
+                ),
               ],
             ),
           ),
-          Divider(height: 1, thickness: 0.5, color: _borderLight),
-          const SizedBox(height: 6),
-          Expanded(
-            child: TextField(
-              controller: _contentController,
-              focusNode: _contentFocusNode,
-              maxLines: null,
-              expands: true,
-              keyboardType: TextInputType.multiline,
-              decoration: InputDecoration(
-                hintText: '开始写点什么...',
-                border: InputBorder.none,
-                hintStyle: TextStyle(
-                  color: _textTertiary,
-                  fontSize: _fontSize,
-                  height: 1.7,
+        ),
+        SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: _contentController,
+                  builder: (context, value, _) => Text(
+                    '${value.text.length} 字',
+                    style: TextStyle(fontSize: 12, color: _textTertiary),
+                  ),
                 ),
-              ),
-              style: TextStyle(
-                fontSize: _fontSize,
-                color: _textPrimary,
-                height: 1.7,
-              ),
-              cursorColor: _textPrimary,
-              onChanged: (_) => _onContentChanged(),
+              ],
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -851,8 +897,34 @@ class _NotePageState extends State<NotePage> {
     super.dispose();
   }
 
+  Widget _buildBody() {
+    return Column(
+      children: [
+        if (_showFind && !_isPreviewing) _buildFindBar(),
+        Expanded(
+          child: IndexedStack(
+            index: _isPreviewing ? 1 : 0,
+            children: [
+              _buildEditor(),
+              _buildPreview(),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final body = _buildBody();
+
+    if (widget.embedded) {
+      return Container(
+        color: Theme.of(context).colorScheme.surface,
+        child: body,
+      );
+    }
+
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
@@ -871,7 +943,7 @@ class _NotePageState extends State<NotePage> {
         actions: [
           if (!_isPreviewing)
             IconButton(
-              icon: Icon(Icons.link, color: _textPrimary, size: 20),
+              icon: Icon(Icons.content_copy, color: _textPrimary, size: 20),
               tooltip: '复制链接',
               onPressed: _copyLink,
             ),
@@ -900,20 +972,14 @@ class _NotePageState extends State<NotePage> {
           child: Divider(height: 0.5, thickness: 0.5, color: _borderLight),
         ),
       ),
-      body: Column(
-        children: [
-          if (_showFind && !_isPreviewing) _buildFindBar(),
-          Expanded(
-            child: IndexedStack(
-              index: _isPreviewing ? 1 : 0,
-              children: [
-                _buildEditor(),
-                _buildPreview(),
-              ],
-            ),
-          ),
-        ],
-      ),
+      body: _isDesktop
+          ? Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 800),
+                child: body,
+              ),
+            )
+          : body,
     );
   }
 }

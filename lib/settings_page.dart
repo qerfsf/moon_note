@@ -3,6 +3,7 @@ import 'main.dart';
 import 'database.dart';
 import 'recycle_bin_page.dart';
 import 'about_page.dart';
+import 'sync_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -85,6 +86,15 @@ class _SettingsPageState extends State<SettingsPage> {
               subtitle: _themeLabel, onTap: _showThemePicker),
           _tile(cs, Icons.format_size, '字体大小',
               subtitle: '${_fontSize.toStringAsFixed(0)} px', onTap: _showFontSizePicker),
+          const Divider(height: 1),
+          const SizedBox(height: 8),
+          _sectionHeader(cs, '同步'),
+          _tile(cs, Icons.sync, '局域网同步',
+              subtitle: '同一 WiFi 下同步笔记',
+              onTap: () {
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SyncPage()));
+              }),
           const Divider(height: 1),
           const SizedBox(height: 8),
           _sectionHeader(cs, '其他'),
