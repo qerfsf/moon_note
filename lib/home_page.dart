@@ -186,6 +186,7 @@ class _HomePageState extends State<HomePage> {
   String? _hoveredId;
   String? _selectedNoteId;
   String _selectedNoteTitle = '';
+  bool _isMouseDown = false;
 
   bool get _isDesktop => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
@@ -1329,12 +1330,17 @@ class _HomePageState extends State<HomePage> {
 
     return MouseRegion(
       onEnter: (_) {
-        if (mounted) setState(() => _hoveredId = nodeId);
+        if (mounted) {
+          setState(() => _hoveredId = nodeId);
+          if (_isSelecting && _isMouseDown) {
+            _toggleSelection(nodeId);
+          }
+        }
       },
       onExit: (_) {
         if (mounted) setState(() => _hoveredId = null);
       },
-      cursor: SystemMouseCursors.click,
+      cursor: _isSelecting ? SystemMouseCursors.click : SystemMouseCursors.click,
       child: GestureDetector(
         onTap: () async {
           if (_isSelecting) {
@@ -1350,6 +1356,22 @@ class _HomePageState extends State<HomePage> {
               _selectedNoteId = node['id'];
               _selectedNoteTitle = node['title'];
             });
+          }
+        },
+        onHorizontalDragEnd: (details) {
+          if (_isSelecting || isFolder) return;
+          if (details.primaryVelocity == null) return;
+          final dx = details.primaryVelocity!;
+          if (dx > 300) {
+            // Swipe right → enter multi-select
+            setState(() {
+              _isSelecting = true;
+              _selectedIds.add(nodeId);
+            });
+          } else if (dx < -300 && !isSystem) {
+            // Swipe left → delete
+            setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
+            _deleteNode(node);
           }
         },
         onSecondaryTapUp: (d) {
@@ -1615,41 +1637,45 @@ class _HomePageState extends State<HomePage> {
                     color: Theme.of(context).colorScheme.outlineVariant),
               ),
             ),
-            body: RefreshIndicator(
-                  onRefresh: _refresh,
-                  child: _nodes.isEmpty
-                      ? ListView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          children: [
-                            SizedBox(
-                              height: MediaQuery.of(context).size.height * 0.6,
-                              child: Center(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.edit_note,
-                                        size: 40, color: _borderLight),
-                                    const SizedBox(height: 10),
-                                    Text(
-                                      '点击 + 开始记录',
-                                      style: TextStyle(
-                                          color: _textTertiary, fontSize: 14),
-                                    ),
-                                  ],
+            body: Listener(
+                  onPointerDown: (_) => _isMouseDown = true,
+                  onPointerUp: (_) => _isMouseDown = false,
+                  child: RefreshIndicator(
+                    onRefresh: _refresh,
+                    child: _nodes.isEmpty
+                        ? ListView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            children: [
+                              SizedBox(
+                                height: MediaQuery.of(context).size.height * 0.6,
+                                child: Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.edit_note,
+                                          size: 40, color: _borderLight),
+                                      const SizedBox(height: 10),
+                                      Text(
+                                        '点击 + 开始记录',
+                                        style: TextStyle(
+                                            color: _textTertiary, fontSize: 14),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
-                        )
-                      : ListView.builder(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: EdgeInsets.zero,
-                          itemCount: _nodes.length,
-                          itemBuilder: (context, index) {
-                            final node = _nodes[index];
-                            return _buildDesktopRow(node);
-                          },
-                        ),
+                            ],
+                          )
+                        : ListView.builder(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: EdgeInsets.zero,
+                            itemCount: _nodes.length,
+                            itemBuilder: (context, index) {
+                              final node = _nodes[index];
+                              return _buildDesktopRow(node);
+                            },
+                          ),
+                  ),
                 ),
             floatingActionButton: _isSelecting
                 ? Column(
