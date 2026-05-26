@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:sqflite/sqflite.dart';
 import 'database.dart';
 import 'note_page.dart';
 import 'recycle_bin_page.dart';
@@ -375,6 +376,34 @@ class _HomePageState extends State<HomePage> {
   Future<void> _deleteNode(Map<String, dynamic> node) async {
     if ((node['is_system'] as int) == 1) return;
     final db = await DatabaseHelper.instance.database;
+
+    if (node['type'] == 'note') {
+      final contentRows = await db.query(
+        'note_content',
+        where: 'note_id = ?',
+        whereArgs: [node['id']],
+      );
+      final content = contentRows.isNotEmpty
+          ? (contentRows.first['content'] as String? ?? '').trim()
+          : '';
+      if ((node['title'] == '未命名' || node['title'] == '') && content.isEmpty) {
+        await _permanentDelete(db, node);
+        return;
+      }
+    }
+
+    if (node['type'] == 'folder') {
+      final children = await db.query(
+        'nodes',
+        where: 'parent_id = ? AND is_deleted = 0',
+        whereArgs: [node['id']],
+      );
+      if (children.isEmpty) {
+        await _permanentDelete(db, node);
+        return;
+      }
+    }
+
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.update(
       'nodes',
@@ -382,6 +411,15 @@ class _HomePageState extends State<HomePage> {
       where: 'id = ?',
       whereArgs: [node['id']],
     );
+  }
+
+  Future<void> _permanentDelete(Database db, Map<String, dynamic> node) async {
+    final id = node['id'];
+    if (node['type'] == 'note') {
+      await db.delete('note_content', where: 'note_id = ?', whereArgs: [id]);
+      await db.delete('fts_content', where: 'note_id = ?', whereArgs: [id]);
+    }
+    await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<void> _batchDelete() async {

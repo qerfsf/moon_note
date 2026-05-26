@@ -35,6 +35,9 @@ class _NotePageState extends State<NotePage> {
   Timer? _snapshotDebounce;
   Timer? _saveDebounce;
   bool _isUndoRedo = false;
+  int _lastPreviewHash = 0;
+  double _lastPreviewFontSize = 0;
+  Widget? _cachedPreview;
 
   // Find/replace state
   bool _showFind = false;
@@ -721,7 +724,15 @@ class _NotePageState extends State<NotePage> {
   Widget _buildPreview() {
     final content = _contentController.text;
     final chars = content.length;
-    return Column(
+    final hash = content.hashCode;
+    if (hash == _lastPreviewHash &&
+        _fontSize == _lastPreviewFontSize &&
+        _cachedPreview != null) {
+      return _cachedPreview!;
+    }
+    _lastPreviewHash = hash;
+    _lastPreviewFontSize = _fontSize;
+    _cachedPreview = Column(
       children: [
         Expanded(
           child: Padding(
@@ -822,6 +833,7 @@ class _NotePageState extends State<NotePage> {
         ),
       ],
     );
+    return _cachedPreview!;
   }
 
   @override
@@ -892,8 +904,13 @@ class _NotePageState extends State<NotePage> {
         children: [
           if (_showFind && !_isPreviewing) _buildFindBar(),
           Expanded(
-            child:
-                _isPreviewing ? _buildPreview() : _buildEditor(),
+            child: IndexedStack(
+              index: _isPreviewing ? 1 : 0,
+              children: [
+                _buildEditor(),
+                _buildPreview(),
+              ],
+            ),
           ),
         ],
       ),
