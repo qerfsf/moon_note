@@ -116,6 +116,9 @@ void main() async {
       await SyncService.instance.tryUsbSync();
     };
     SyncService.instance.startAdbMonitor();
+    Future.delayed(const Duration(seconds: 2), () {
+      SyncService.instance.tryUsbSync();
+    });
   }
   runApp(const MyApp());
 }

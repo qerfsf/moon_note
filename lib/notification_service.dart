@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 class NotificationService {
@@ -14,31 +14,24 @@ class NotificationService {
   static const _channelId = 'moon_note_quick';
   static const _channelName = '快速记录';
   static const _notifyId = 1;
+  static const _channel = MethodChannel('com.example.moon_note/service');
 
   Future<void> init() async {
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const windowsInit = WindowsInitializationSettings(
-      appName: 'Moon Note',
-      appUserModelId: 'com.example.moon_note',
-      guid: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-    );
+    // Listen for quick-note commands from native (Quick Settings tile, etc.)
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'onQuickNote') {
+        onQuickNote?.call();
+      }
+    });
+
     final isDesktop =
         Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-    final initSettings = InitializationSettings(
-      android: androidInit,
-      windows: windowsInit,
-    );
-    await _plugin.initialize(
-      settings: initSettings,
-      onDidReceiveNotificationResponse: (response) {
-        if (response.notificationResponseType ==
-            NotificationResponseType.selectedNotification) {
-          onQuickNote?.call();
-        }
-      },
-    );
 
     if (!isDesktop) {
+      const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+      final initSettings = InitializationSettings(android: androidInit);
+      await _plugin.initialize(settings: initSettings);
+
       const androidChannel = AndroidNotificationChannel(
         _channelId,
         _channelName,
@@ -50,6 +43,13 @@ class NotificationService {
           .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>()
           ?.createNotificationChannel(androidChannel);
+
+      // Check if app was launched via Quick Settings tile
+      final hasPending =
+          await _channel.invokeMethod('checkPendingQuickNote');
+      if (hasPending == true) {
+        onQuickNote?.call();
+      }
     }
   }
 
@@ -64,31 +64,50 @@ class NotificationService {
     return granted ?? false;
   }
 
+  Future<void> startForeground() async {
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    if (isDesktop) return;
+    try {
+      await _channel.invokeMethod('startForegroundService');
+    } catch (_) {}
+  }
+
+  Future<void> stopForeground() async {
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    if (isDesktop) return;
+    try {
+      await _channel.invokeMethod('stopForegroundService');
+    } catch (_) {}
+  }
+
+  Future<bool> isIgnoringBatteryOptimizations() async {
+    try {
+      return await _channel.invokeMethod('isIgnoringBatteryOptimizations')
+          as bool? ??
+          true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  Future<void> requestBatteryOptimization() async {
+    try {
+      await _channel.invokeMethod('requestBatteryOptimization');
+    } catch (_) {}
+  }
+
   Future<void> showPersistent() async {
     final isDesktop =
         Platform.isWindows || Platform.isLinux || Platform.isMacOS;
     if (isDesktop) return;
-    const androidDetails = AndroidNotificationDetails(
-      _channelId,
-      _channelName,
-      priority: Priority.low,
-      importance: Importance.low,
-      ongoing: true,
-      autoCancel: false,
-      showWhen: false,
-      icon: '@mipmap/ic_launcher',
-      visibility: NotificationVisibility.public,
-    );
-    const details = NotificationDetails(android: androidDetails);
-    await _plugin.show(
-      id: _notifyId,
-      title: 'Moon Note',
-      body: '点击快速记录',
-      notificationDetails: details,
-    );
+    // Start foreground service instead of just showing a notification
+    await startForeground();
   }
 
   Future<void> cancel() async {
     await _plugin.cancel(id: _notifyId);
+    await stopForeground();
   }
 }
