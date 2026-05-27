@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'database.dart';
 import 'note_page.dart';
@@ -188,6 +190,9 @@ class _HomePageState extends State<HomePage> {
   String _selectedNoteTitle = '';
   bool _isMouseDown = false;
   Offset? _dragStart;
+  bool _isEditingTitle = false;
+  late final TextEditingController _titleEditController;
+  late final FocusNode _titleEditFocusNode;
 
   bool get _isDesktop => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
@@ -201,14 +206,74 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _refresh() async {
     await _loadNodes();
-    await _trySync();
+    _trySync();
   }
 
   @override
   void initState() {
     super.initState();
+    _titleEditController = TextEditingController();
+    _titleEditFocusNode = FocusNode();
+    _titleEditFocusNode.addListener(() {
+      if (!_titleEditFocusNode.hasFocus && _isEditingTitle) {
+        _finishEditingTitle();
+      }
+    });
     _refresh();
-    NotificationService.instance.onQuickNote = _showQuickNoteDialog;
+    NotificationService.instance.onQuickNote = _onQuickNote;
+    if (!_isDesktop) _checkBatteryOptimization();
+    _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) => _trySync(showToast: false));
+    SyncService.instance.dataVersionNotifier.addListener(_onRemoteDataChanged);
+  }
+
+  @override
+  void dispose() {
+    _titleEditFocusNode.dispose();
+    _titleEditController.dispose();
+    _syncTimer?.cancel();
+    SyncService.instance.dataVersionNotifier.removeListener(_onRemoteDataChanged);
+    super.dispose();
+  }
+
+  void _checkBatteryOptimization() {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        final ignoring =
+            await NotificationService.instance.isIgnoringBatteryOptimizations();
+        if (!ignoring && mounted) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: Text('保持后台运行',
+                  style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      color: _textPrimary)),
+              content: Text(
+                'Moon Note 需要在后台运行以提供同步和提醒功能。\n\n请关闭电池优化以保持应用持续运行。',
+                style: TextStyle(fontSize: 15, color: _textSecondary),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text('稍后',
+                      style: TextStyle(color: _textTertiary, fontSize: 14)),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    NotificationService.instance
+                        .requestBatteryOptimization();
+                  },
+                  child: Text('去设置',
+                      style: TextStyle(color: _textPrimary, fontSize: 14)),
+                ),
+              ],
+            ),
+          );
+        }
+      } catch (_) {}
+    });
   }
 
   void _exitSelection() {
@@ -243,35 +308,44 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _trySync() async {
-    bool synced = false;
-    // Try WiFi sync first
+  bool _isSyncing = false;
+  Timer? _syncTimer;
+
+  void _onRemoteDataChanged() => _loadNodes();
+
+  Future<void> _trySync({bool showToast = true}) async {
+    if (_isSyncing) return;
+    _isSyncing = true;
     try {
-      final info = await SyncService.instance.getLastConnection();
-      final host = info['host'];
-      final port = int.tryParse(info['port'] ?? '') ?? 9090;
-      if (host != null && !SyncService.instance.isOwnAddress(host)) {
-        await SyncService.instance.fullSync(host, port);
-        synced = true;
-      }
-    } catch (_) {}
-    // On desktop, also try USB sync
-    if (!synced && _isDesktop) {
+      bool synced = false;
       try {
-        synced = await SyncService.instance.tryUsbSync();
+        final info = await SyncService.instance.getLastConnection();
+        final host = info['host'];
+        final port = int.tryParse(info['port'] ?? '') ?? 9090;
+        if (host != null && !SyncService.instance.isOwnAddress(host)) {
+          await SyncService.instance.fullSync(host, port);
+          synced = true;
+        }
       } catch (_) {}
-    }
-    if (synced) {
-      await _loadNodes();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('同步完成'),
-            duration: Duration(seconds: 1),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+      if (!synced && _isDesktop) {
+        try {
+          synced = await SyncService.instance.tryUsbSync();
+        } catch (_) {}
       }
+      if (synced) {
+        await _loadNodes();
+        if (showToast && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('同步完成'),
+              duration: Duration(seconds: 1),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } finally {
+      _isSyncing = false;
     }
   }
 
@@ -384,83 +458,16 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _showQuickNoteDialog() async {
-    final controller = TextEditingController();
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('快速记录',
-            style: TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.w600,
-                color: Theme.of(ctx).colorScheme.onSurface)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLines: 6,
-          minLines: 3,
-          style: TextStyle(
-              fontSize: 15, color: Theme.of(ctx).colorScheme.onSurface),
-          decoration: InputDecoration(
-            hintText: '输入内容...',
-            hintStyle: TextStyle(
-                fontSize: 15,
-                color: Theme.of(ctx).colorScheme.outline),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(6),
-              borderSide: BorderSide(
-                  color: Theme.of(ctx).colorScheme.outlineVariant),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(6),
-              borderSide: BorderSide(
-                  color: Theme.of(ctx).colorScheme.outlineVariant),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(6),
-              borderSide: BorderSide(
-                  color:
-                      Theme.of(ctx).colorScheme.onSurfaceVariant,
-                  width: 1.5),
-            ),
-            contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12, vertical: 10),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('取消',
-                style: TextStyle(
-                    fontSize: 14,
-                    color:
-                        Theme.of(ctx).colorScheme.outline)),
-          ),
-          TextButton(
-            onPressed: () =>
-                Navigator.pop(ctx, controller.text.trim()),
-            child: Text('保存',
-                style: TextStyle(
-                    fontSize: 14,
-                    color: Theme.of(ctx).colorScheme.onSurface)),
-          ),
-        ],
-      ),
-    );
-
-    if (result == null || result.isEmpty) return;
-
+  Future<void> _onQuickNote() async {
     try {
       final db = await DatabaseHelper.instance.database;
       final now = DateTime.now().millisecondsSinceEpoch;
       final id = now.toString();
-      final firstLine = result.split('\n').first;
-      final title = firstLine.isEmpty ? '未命名' : firstLine;
       await db.insert('nodes', {
         'id': id,
         'type': 'note',
         'parent_id': null,
-        'title': title,
+        'title': '未命名',
         'sort_order': now.toDouble(),
         'is_pinned': 0,
         'pin_order': 0,
@@ -472,19 +479,37 @@ class _HomePageState extends State<HomePage> {
       });
       await db.insert('note_content', {
         'note_id': id,
-        'content': result,
+        'content': '',
         'modified_at': now,
       });
       await db.insert('fts_content', {
         'note_id': id,
-        'title': title,
-        'content': result,
+        'title': '未命名',
+        'content': '',
       });
-      if (_currentFolderId == null && mounted) {
+      if (_currentFolderId == null) {
         await _loadNodes();
       }
+      if (!mounted) return;
+      if (_isDesktop) {
+        setState(() {
+          _selectedNoteId = id;
+          _selectedNoteTitle = '未命名';
+        });
+      } else {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => NotePage(
+              noteId: id,
+              initialTitle: '未命名',
+            ),
+          ),
+        );
+        if (mounted) await _loadNodes();
+      }
     } catch (e) {
-      print('快速记录错误: $e');
+      print('快速笔记错误: $e');
     }
   }
 
@@ -759,11 +784,83 @@ class _HomePageState extends State<HomePage> {
       {
         'is_pinned': isPinned ? 0 : 1,
         'pin_order': isPinned ? 0 : now.toDouble(),
+        'modified_at': now,
       },
       where: 'id = ?',
       whereArgs: [node['id']],
     );
     await _loadNodes();
+  }
+
+  Widget _buildAppBarTitle() {
+    if (_isEditingTitle) {
+      return Material(
+        type: MaterialType.transparency,
+        child: SizedBox(
+          width: 200,
+          child: TextField(
+            controller: _titleEditController,
+            focusNode: _titleEditFocusNode,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _finishEditingTitle(),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurface,
+              fontWeight: FontWeight.w600,
+              fontSize: 17,
+            ),
+            decoration: const InputDecoration(
+              border: InputBorder.none,
+              isDense: true,
+              contentPadding: EdgeInsets.zero,
+            ),
+            cursorColor: Theme.of(context).colorScheme.onSurface,
+          ),
+        ),
+      );
+    }
+    return GestureDetector(
+      onTap: _currentFolderId != null ? _startEditingTitle : null,
+      child: Text(
+        _currentFolderTitle,
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.onSurface,
+          fontWeight: FontWeight.w600,
+          fontSize: 17,
+        ),
+      ),
+    );
+  }
+
+  void _startEditingTitle() {
+    _titleEditController.text = _currentFolderTitle;
+    _titleEditController.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _currentFolderTitle.length,
+    );
+    setState(() => _isEditingTitle = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _titleEditFocusNode.requestFocus();
+    });
+  }
+
+  Future<void> _finishEditingTitle() async {
+    if (!_isEditingTitle) return;
+    final newTitle = _titleEditController.text.trim();
+    setState(() => _isEditingTitle = false);
+    if (newTitle.isNotEmpty &&
+        newTitle != _currentFolderTitle &&
+        _currentFolderId != null &&
+        !_currentFolderId!.startsWith('system_')) {
+      final db = await DatabaseHelper.instance.database;
+      await db.update(
+        'nodes',
+        {'title': newTitle, 'modified_at': DateTime.now().millisecondsSinceEpoch},
+        where: 'id = ?',
+        whereArgs: [_currentFolderId],
+      );
+      setState(() => _currentFolderTitle = newTitle);
+      await _loadNodes();
+    }
   }
 
   Future<void> _renameNode(Map<String, dynamic> node) async {
@@ -816,10 +913,16 @@ class _HomePageState extends State<HomePage> {
       final db = await DatabaseHelper.instance.database;
       await db.update(
         'nodes',
-        {'title': result},
+        {'title': result, 'modified_at': DateTime.now().millisecondsSinceEpoch},
         where: 'id = ?',
         whereArgs: [node['id']],
       );
+      if (node['type'] == 'note') {
+        await db.rawInsert(
+          'INSERT OR REPLACE INTO fts_content(note_id, title, content) SELECT note_id, ?, content FROM fts_content WHERE note_id = ?',
+          [result, node['id']],
+        );
+      }
       if (node['id'] == _currentFolderId) {
         _currentFolderTitle = result;
       }
@@ -1112,7 +1215,7 @@ class _HomePageState extends State<HomePage> {
                 _copyNode(node);
               },
             ),
-            if (node['type'] == 'note')
+            if (node['type'] == 'note') ...[
               ListTile(
                 leading: Icon(
                   _reminderNoteIds.contains(node['id'])
@@ -1134,6 +1237,20 @@ class _HomePageState extends State<HomePage> {
                   _showReminderDialog(node);
                 },
               ),
+              ListTile(
+                leading: Icon(Icons.file_download_outlined,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
+                title: Text('导出为 Markdown',
+                    style: TextStyle(
+                        fontSize: 15,
+                        color: Theme.of(context).colorScheme.onSurface)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _exportNote(node);
+                },
+              ),
+            ],
             ListTile(
               leading: Icon(Icons.checklist_outlined,
                   size: 20,
@@ -1270,6 +1387,38 @@ class _HomePageState extends State<HomePage> {
         ),
         onTap: () => _showReminderDialog(node),
       ));
+      items.add(PopupMenuItem<String>(
+        value: 'export',
+        child: Row(
+          children: [
+            Icon(Icons.file_download_outlined,
+                size: 18, color: _textSecondary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('导出为 Markdown',
+                  style: TextStyle(fontSize: 14, color: _textPrimary)),
+            ),
+          ],
+        ),
+        onTap: () => _exportNote(node),
+      ));
+    }
+
+    if (_isDesktop) {
+      items.add(PopupMenuItem<String>(
+        value: 'open_location',
+        child: Row(
+          children: [
+            Icon(Icons.folder_open_outlined, size: 18, color: _textSecondary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('打开文件位置',
+                  style: TextStyle(fontSize: 14, color: _textPrimary)),
+            ),
+          ],
+        ),
+        onTap: () => _openFileLocation(),
+      ));
     }
 
     items.add(PopupMenuItem<String>(
@@ -1312,6 +1461,83 @@ class _HomePageState extends State<HomePage> {
     return items;
   }
 
+  Future<void> _openFileLocation() async {
+    if (!Platform.isWindows) return;
+    try {
+      final dbPath = await getDatabasesPath();
+      final fullPath = '$dbPath${Platform.pathSeparator}moon_note.db';
+      await Process.run('explorer', ['/select,', fullPath]);
+    } catch (_) {}
+  }
+
+  Future<void> _exportNote(Map<String, dynamic> node) async {
+    if (node['type'] != 'note') return;
+    final nodeId = node['id'] as String;
+    final title = node['title'] as String? ?? '未命名';
+    try {
+      final db = await DatabaseHelper.instance.database;
+      final contentRows = await db.query(
+        'note_content',
+        where: 'note_id = ?',
+        whereArgs: [nodeId],
+      );
+      final content =
+          contentRows.isNotEmpty ? contentRows.first['content'] as String : '';
+
+      final dir = await getApplicationDocumentsDirectory();
+      final exportDir = Directory('${dir.path}${Platform.pathSeparator}exports');
+      if (!await exportDir.exists()) {
+        await exportDir.create(recursive: true);
+      }
+
+      final safeName = title
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
+          .replaceAll(RegExp(r'\s+'), ' ');
+      var filePath = '${exportDir.path}${Platform.pathSeparator}$safeName.md';
+
+      // avoid overwriting
+      var i = 1;
+      while (await File(filePath).exists()) {
+        filePath =
+            '${exportDir.path}${Platform.pathSeparator}$safeName ($i).md';
+        i++;
+      }
+
+      await File(filePath).writeAsString(content);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已导出: $safeName.md'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+            action: Platform.isWindows
+                ? SnackBarAction(
+                    label: '打开文件夹',
+                    onPressed: () async {
+                      try {
+                        await Process.run(
+                            'explorer', ['/select,', filePath]);
+                      } catch (_) {}
+                    },
+                  )
+                : null,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('导出失败: $e'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
   void _showDesktopContextMenu(
       Map<String, dynamic> node, Offset position) {
     showMenu<String>(
@@ -1344,149 +1570,178 @@ class _HomePageState extends State<HomePage> {
         if (mounted) setState(() => _hoveredId = null);
       },
       cursor: _isSelecting ? SystemMouseCursors.click : SystemMouseCursors.click,
-      child: Listener(
-        onPointerDown: (d) => _dragStart = d.localPosition,
-        onPointerUp: (d) {
-          if (_dragStart == null) return;
-          final dx = d.localPosition.dx - _dragStart!.dx;
-          final dy = (d.localPosition.dy - _dragStart!.dy).abs();
-          _dragStart = null;
-          // Only treat as swipe if horizontal movement is significant and vertical is small
-          if (dx.abs() > 30 && dy < dx.abs() * 0.5) {
-            if (dx > 0 && !_isSelecting && !isFolder) {
+      child: Dismissible(
+        key: Key(nodeId),
+        direction: _isSelecting
+            ? DismissDirection.none
+            : DismissDirection.horizontal,
+        movementDuration: const Duration(milliseconds: 200),
+        dismissThresholds:
+            const {DismissDirection.endToStart: 0.3, DismissDirection.startToEnd: 0.3},
+        confirmDismiss: (direction) async {
+          if (direction == DismissDirection.startToEnd) {
+            if (!_isSelecting && !isFolder) {
               setState(() {
                 _isSelecting = true;
                 _selectedIds.add(nodeId);
               });
-              return;
-            } else if (dx < 0 && !_isSelecting && !isFolder && !isSystem) {
-              setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
-              _deleteNode(node);
-              return;
             }
+            return false;
           }
-          // Otherwise treat as tap
-          if (_isSelecting) {
-            _toggleSelection(nodeId);
-          } else if (isFolder) {
-            setState(() {
-              _currentFolderId = node['id'];
-              _currentFolderTitle = node['title'];
-            });
-            _loadNodes();
-          } else {
-            setState(() {
-              _selectedNoteId = node['id'];
-              _selectedNoteTitle = node['title'];
-            });
-          }
+          if (isSystem) return false;
+          setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
+          _deleteNode(node);
+          return true;
         },
+        background: Container(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.only(left: 24),
+          color: isFolder ? _textTertiary : _bgHover,
+          child: Icon(
+            isFolder ? Icons.block : Icons.checklist_outlined,
+            size: 22,
+            color: Colors.white,
+          ),
+        ),
+        secondaryBackground: Container(
+          alignment: Alignment.centerRight,
+          padding: const EdgeInsets.only(right: 24),
+          color: isSystem ? _textTertiary : _red,
+          child: Icon(
+            isSystem ? Icons.block : Icons.delete_outline,
+            size: 22,
+            color: Colors.white,
+          ),
+        ),
         child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            if (_isSelecting) {
+              _toggleSelection(nodeId);
+            } else if (isFolder) {
+              setState(() {
+                _currentFolderId = node['id'];
+                _currentFolderTitle = node['title'];
+              });
+              _loadNodes();
+              if ((node['title'] as String).contains('未命名')) {
+                _startEditingTitle();
+              }
+            } else {
+              setState(() {
+                _selectedNoteId = node['id'];
+                _selectedNoteTitle = node['title'];
+              });
+            }
+          },
+          onDoubleTap: () {
+            if (!_isSelecting && !isSystem) _renameNode(node);
+          },
           onSecondaryTapUp: (d) {
             if (!_isSelecting) {
               _showDesktopContextMenu(node, d.globalPosition);
             }
           },
           child: Container(
-          decoration: BoxDecoration(
-            color: isHovered ? _bgHover : Colors.transparent,
-            border: Border(
-                bottom: BorderSide(color: _borderLight, width: 0.5)),
-          ),
-          padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          child: Row(
-            children: [
-              if (_isSelecting)
-                Padding(
-                  padding: const EdgeInsets.only(right: 10),
-                  child: Icon(
-                    isSelected ? Icons.check_circle : Icons.circle_outlined,
-                    size: 20,
-                    color: isSelected ? _accent : _borderLight,
+            decoration: BoxDecoration(
+              color: isHovered ? _bgHover : Colors.transparent,
+              border: Border(
+                  bottom: BorderSide(color: _borderLight, width: 0.5)),
+            ),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              children: [
+                if (_isSelecting)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 10),
+                    child: Icon(
+                      isSelected ? Icons.check_circle : Icons.circle_outlined,
+                      size: 20,
+                      color: isSelected ? _accent : _borderLight,
+                    ),
+                  )
+                else
+                  Icon(
+                    isFolder ? Icons.folder_outlined : Icons.article_outlined,
+                    size: 18,
+                    color: _textTertiary,
                   ),
-                )
-              else
-                Icon(
-                  isFolder ? Icons.folder_outlined : Icons.article_outlined,
-                  size: 18,
-                  color: _textTertiary,
-                ),
-              if (!_isSelecting) const SizedBox(width: 10),
-              if (!_isSelecting && (node['is_pinned'] as int) == 1)
-                Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child:
-                      Icon(Icons.push_pin, size: 17, color: _textSecondary),
-                ),
-              if (!_isSelecting &&
-                  !isFolder &&
-                  _reminderNoteIds.contains(nodeId))
-                Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: Icon(Icons.notifications_active,
-                      size: 14, color: _textSecondary),
-                ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      node['title'],
-                      style: TextStyle(
-                        fontSize: 15,
-                        color: _textPrimary,
-                        height: 1.4,
+                if (!_isSelecting) const SizedBox(width: 10),
+                if (!_isSelecting && (node['is_pinned'] as int) == 1)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child:
+                        Icon(Icons.push_pin, size: 17, color: _textSecondary),
+                  ),
+                if (!_isSelecting &&
+                    !isFolder &&
+                    _reminderNoteIds.contains(nodeId))
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: Icon(Icons.notifications_active,
+                        size: 14, color: _textSecondary),
+                  ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        node['title'],
+                        style: TextStyle(
+                          fontSize: 15,
+                          color: _textPrimary,
+                          height: 1.4,
+                        ),
                       ),
-                    ),
-                    Text(
-                      _formatDate(node['modified_at'] as int),
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: _textTertiary,
-                        height: 1.3,
+                      Text(
+                        _formatDate(node['modified_at'] as int),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: _textTertiary,
+                          height: 1.3,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              AnimatedOpacity(
-                opacity: isHovered && !_isSelecting ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 150),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _desktopActionBtn(
-                      (node['is_pinned'] as int) == 1
-                          ? Icons.push_pin
-                          : Icons.push_pin_outlined,
-                      () => _togglePin(node),
-                    ),
-                    if (!isSystem)
+                AnimatedOpacity(
+                  opacity: isHovered && !_isSelecting ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 150),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                       _desktopActionBtn(
-                        Icons.delete_outline,
-                        () {
-                          setState(() => _nodes.removeWhere(
-                              (n) => n['id'] == node['id']));
-                          _deleteNode(node);
-                        },
-                        color: _red,
+                        (node['is_pinned'] as int) == 1
+                            ? Icons.push_pin
+                            : Icons.push_pin_outlined,
+                        () => _togglePin(node),
                       ),
-                    _desktopActionBtn(
-                      Icons.more_horiz,
-                      () {},
-                      onTapDown: (d) =>
-                          _showDesktopContextMenu(node, d.globalPosition),
-                    ),
-                  ],
+                      if (!isSystem)
+                        _desktopActionBtn(
+                          Icons.delete_outline,
+                          () {
+                            setState(() => _nodes.removeWhere(
+                                (n) => n['id'] == node['id']));
+                            _deleteNode(node);
+                          },
+                          color: _red,
+                        ),
+                      _desktopActionBtn(
+                        Icons.more_horiz,
+                        () {},
+                        onTapDown: (d) =>
+                            _showDesktopContextMenu(node, d.globalPosition),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              if (!_isSelecting && isFolder && !isHovered)
-                Icon(Icons.chevron_right, size: 16, color: _borderLight),
-            ],
+                if (!_isSelecting && isFolder && !isHovered)
+                  Icon(Icons.chevron_right, size: 16, color: _borderLight),
+              ],
+            ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -1541,15 +1796,8 @@ class _HomePageState extends State<HomePage> {
                         fontSize: 17,
                       ),
                     )
-                  : Text(
-                      _currentFolderTitle,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurface,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 17,
-                      ),
-                    ),
-              actions: _isSelecting
+                  : _buildAppBarTitle(),
+              actions: _isSelecting || _isEditingTitle
                   ? null
                   : [
                       if (_currentFolderId == null)
@@ -1782,11 +2030,24 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
+    final editingNoteId = _selectedNoteId!;
     return NotePage(
-      key: ValueKey(_selectedNoteId),
-      noteId: _selectedNoteId!,
+      key: ValueKey(editingNoteId),
+      noteId: editingNoteId,
       initialTitle: _selectedNoteTitle,
       embedded: true,
+      onTitleChanged: (newTitle) {
+        _selectedNoteTitle = newTitle;
+        final idx = _nodes.indexWhere((n) => n['id'] == editingNoteId);
+        if (idx != -1) {
+          _nodes[idx] = Map<String, dynamic>.from(_nodes[idx])
+            ..['title'] = newTitle
+            ..['modified_at'] = DateTime.now().millisecondsSinceEpoch;
+        }
+        setState(() {
+          _nodes = List<Map<String, dynamic>>.from(_nodes);
+        });
+      },
     );
   }
 
@@ -1942,15 +2203,8 @@ class _HomePageState extends State<HomePage> {
                     fontSize: 17,
                   ),
                 )
-              : Text(
-                  _currentFolderTitle,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 17,
-                  ),
-                ),
-          actions: _isSelecting
+              : _buildAppBarTitle(),
+          actions: _isSelecting || _isEditingTitle
               ? null
               : [
                   if (_currentFolderId == null)
@@ -2061,7 +2315,7 @@ class _HomePageState extends State<HomePage> {
                 )
               : ListView.builder(
                   physics: const AlwaysScrollableScrollPhysics(),
-                  padding: EdgeInsets.zero,
+                  padding: const EdgeInsets.only(bottom: 80),
                   itemCount: _nodes.length,
                   itemBuilder: (context, index) {
                     final node = _nodes[index];
@@ -2078,7 +2332,8 @@ class _HomePageState extends State<HomePage> {
                     onPointerUp: (d) {
                       if (_dragStart == null || _isSelecting) return;
                       final dx = d.localPosition.dx - _dragStart!.dx;
-                      if (dx > 40) {
+                      final dy = (d.localPosition.dy - _dragStart!.dy).abs();
+                      if (dx > 40 && dy < dx) {
                         setState(() {
                           _isSelecting = true;
                           _selectedIds.add(nodeId);
@@ -2123,6 +2378,9 @@ class _HomePageState extends State<HomePage> {
                             _currentFolderTitle = node['title'];
                           });
                           _loadNodes();
+                          if ((node['title'] as String).contains('未命名')) {
+                            _startEditingTitle();
+                          }
                         } else {
                           await Navigator.push(
                             context,

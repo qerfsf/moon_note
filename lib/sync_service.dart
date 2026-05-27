@@ -7,6 +7,7 @@ import 'database.dart';
 
 enum SyncStatus { idle, connecting, syncing, error }
 
+
 class SyncService {
   static final SyncService instance = SyncService._();
   SyncService._();
@@ -19,6 +20,7 @@ class SyncService {
       ValueNotifier(SyncStatus.idle);
   final ValueNotifier<String> messageNotifier = ValueNotifier('');
   final ValueNotifier<int> lastSyncTimeNotifier = ValueNotifier(0);
+  final ValueNotifier<int> dataVersionNotifier = ValueNotifier(0);
 
   Process? _adbMonitorProcess;
   final _knownAdbDevices = <String>{};
@@ -26,6 +28,8 @@ class SyncService {
   bool _adbSyncPending = false;
   Timer? _adbDebounce;
   final List<String> _adbPendingLines = [];
+  int _lastAdbSyncTime = 0;
+  static const _adbSyncCooldownMs = 10000;
   void Function(String host, int port)? onAdbDeviceConnected;
 
   bool get isServerRunning => _isServerRunning;
@@ -184,10 +188,20 @@ class SyncService {
 
   void _updateDeviceListInitial(String output) {
     final lines = output.split('\n');
+    bool hasDevice = false;
     for (final line in lines) {
       if (line.trim().isNotEmpty && line.contains('\tdevice')) {
         _knownAdbDevices.add(line.split('\t').first.trim());
+        hasDevice = true;
       }
+    }
+    if (hasDevice) {
+      _adbSyncLock = false;
+      _adbSyncPending = false;
+      // Delay initial sync to ensure phone server is ready
+      Future.delayed(const Duration(seconds: 2), () {
+        _runAdbSync();
+      });
     }
   }
 
@@ -217,6 +231,9 @@ class SyncService {
   }
 
   void _runAdbSync() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastAdbSyncTime < _adbSyncCooldownMs) return;
+    _lastAdbSyncTime = now;
     onAdbDeviceConnected?.call('127.0.0.1', 9091);
   }
 
@@ -238,7 +255,6 @@ class SyncService {
         messageNotifier.value = 'USB: 未检测到设备';
         return false;
       }
-      // Clean up any stale forward first
       await removeAdbForward(localPort: 9091);
       final ok = await setupAdbForward(localPort: 9091, remotePort: 9090);
       if (!ok) {
@@ -246,25 +262,29 @@ class SyncService {
         return false;
       }
       try {
-        // Give the forward time to establish
-        await Future.delayed(const Duration(milliseconds: 500));
-        // Retry connection check up to 3 times
-        for (int i = 0; i < 3; i++) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        bool connected = false;
+        for (int i = 0; i < 2; i++) {
+          final client = HttpClient();
+          client.connectionTimeout = const Duration(seconds: 1);
           try {
-            final client = HttpClient();
             final req = await client.getUrl(
               Uri(scheme: 'http', host: '127.0.0.1', port: 9091, path: '/sync/status'),
             );
-            final res = await req.close().timeout(const Duration(seconds: 3));
+            final res = await req.close().timeout(const Duration(seconds: 1));
             client.close();
-            if (res.statusCode == 200) break;
-          } catch (_) {
-            if (i == 2) {
-              messageNotifier.value = 'USB: 无法连接到手机服务';
-              return false;
+            if (res.statusCode == 200) {
+              connected = true;
+              break;
             }
-            await Future.delayed(const Duration(milliseconds: 500));
+          } catch (_) {
+            client.close();
           }
+          if (i == 0) await Future.delayed(const Duration(milliseconds: 300));
+        }
+        if (!connected) {
+          messageNotifier.value = 'USB: 无法连接到手机服务';
+          return false;
         }
         await fullSync('127.0.0.1', 9091, saveConnection: false);
         return true;
@@ -287,6 +307,7 @@ class SyncService {
     _adbMonitorProcess = null;
     _knownAdbDevices.clear();
   }
+
   Future<int> _getLastSyncTime() async {
     final db = await DatabaseHelper.instance.database;
     final result = await db.query(
@@ -341,13 +362,14 @@ class SyncService {
     try {
       final lastSync = await _getLastSyncTime();
       final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 1);
       final request = await client.postUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/pull'),
       );
       request.headers.contentType = ContentType.json;
       request.write(jsonEncode({'last_sync': lastSync}));
       final response = await request.close().timeout(
-            const Duration(seconds: 30),
+            const Duration(seconds: 10),
           );
       if (response.statusCode != 200) {
         throw Exception('服务器返回 ${response.statusCode}');
@@ -389,6 +411,7 @@ class SyncService {
       );
 
       final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 1);
       final request = await client.postUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/push'),
       );
@@ -399,7 +422,7 @@ class SyncService {
         'fts': fts,
       }));
       final response = await request.close().timeout(
-            const Duration(seconds: 30),
+            const Duration(seconds: 10),
           );
       if (response.statusCode != 200) {
         throw Exception('服务器返回 ${response.statusCode}');
@@ -427,13 +450,15 @@ class SyncService {
     messageNotifier.value = '正在检查连接...';
     try {
       final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 1);
       final statusReq = await client.getUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/status'),
       );
       final statusRes = await statusReq.close().timeout(
-            const Duration(seconds: 5),
+            const Duration(seconds: 1),
           );
       if (statusRes.statusCode != 200) {
+        client.close();
         throw Exception('无法连接到同步服务');
       }
       client.close();
@@ -456,65 +481,68 @@ class SyncService {
     final db = await DatabaseHelper.instance.database;
     int merged = 0;
 
-    if (data['nodes'] != null) {
-      for (final node in (data['nodes'] as List)) {
-        final existing = await db.query(
-          'nodes',
-          where: 'id = ?',
-          whereArgs: [node['id']],
-        );
-        if (existing.isEmpty) {
-          await db.insert('nodes', _toDbMap(node));
+    if (data['nodes'] != null && (data['nodes'] as List).isNotEmpty) {
+      final nodes = data['nodes'] as List;
+      // Batch load existing nodes
+      final ids = nodes.map((n) => n['id'] as String).toList();
+      final placeholders = ids.map((_) => '?').join(',');
+      final existingRows = await db.rawQuery(
+        'SELECT id, modified_at FROM nodes WHERE id IN ($placeholders)',
+        ids,
+      );
+      final existingMap = {for (final r in existingRows) r['id'] as String: r['modified_at'] as int};
+
+      final batch = db.batch();
+      for (final node in nodes) {
+        final id = node['id'] as String;
+        final remoteModified = node['modified_at'] as int;
+        final localModified = existingMap[id];
+        if (localModified == null) {
+          batch.insert('nodes', _toDbMap(node));
           merged++;
-        } else {
-          final localModified = existing.first['modified_at'] as int;
-          final remoteModified = node['modified_at'] as int;
-          if (remoteModified > localModified) {
-            await db.update(
-              'nodes',
-              _toDbMap(node),
-              where: 'id = ?',
-              whereArgs: [node['id']],
-            );
-            merged++;
-          }
+        } else if (remoteModified > localModified) {
+          batch.update('nodes', _toDbMap(node), where: 'id = ?', whereArgs: [id]);
+          merged++;
         }
       }
+      await batch.commit(noResult: true);
     }
 
-    if (data['content'] != null) {
-      for (final c in (data['content'] as List)) {
-        final existing = await db.query(
-          'note_content',
-          where: 'note_id = ?',
-          whereArgs: [c['note_id']],
-        );
-        if (existing.isEmpty) {
-          await db.insert('note_content', _toDbMap(c));
+    if (data['content'] != null && (data['content'] as List).isNotEmpty) {
+      final contentList = data['content'] as List;
+      final noteIds = contentList.map((c) => c['note_id'] as String).toList();
+      final placeholders = noteIds.map((_) => '?').join(',');
+      final existingRows = await db.rawQuery(
+        'SELECT note_id, modified_at FROM note_content WHERE note_id IN ($placeholders)',
+        noteIds,
+      );
+      final existingMap = {for (final r in existingRows) r['note_id'] as String: r['modified_at'] as int};
+
+      final batch = db.batch();
+      for (final c in contentList) {
+        final noteId = c['note_id'] as String;
+        final remoteModified = c['modified_at'] as int;
+        final localModified = existingMap[noteId];
+        if (localModified == null) {
+          batch.insert('note_content', _toDbMap(c));
           merged++;
-        } else {
-          final localModified = existing.first['modified_at'] as int;
-          final remoteModified = c['modified_at'] as int;
-          if (remoteModified > localModified) {
-            await db.update(
-              'note_content',
-              _toDbMap(c),
-              where: 'note_id = ?',
-              whereArgs: [c['note_id']],
-            );
-            merged++;
-          }
+        } else if (remoteModified > localModified) {
+          batch.update('note_content', _toDbMap(c), where: 'note_id = ?', whereArgs: [noteId]);
+          merged++;
         }
       }
+      await batch.commit(noResult: true);
     }
 
-    if (data['fts'] != null) {
+    if (data['fts'] != null && (data['fts'] as List).isNotEmpty) {
+      final batch = db.batch();
       for (final f in (data['fts'] as List)) {
-        await db.rawInsert(
+        batch.rawInsert(
           'INSERT OR REPLACE INTO fts_content(note_id, title, content) VALUES(?, ?, ?)',
           [f['note_id'], f['title'], f['content']],
         );
       }
+      await batch.commit(noResult: true);
     }
 
     return merged;
@@ -530,6 +558,13 @@ class SyncService {
     return db;
   }
 
+  void _maybeSaveRemoteHost(HttpRequest request) {
+    final addr = request.connectionInfo?.remoteAddress;
+    if (addr == null || addr.isLoopback) return;
+    final host = addr.address;
+    saveLastConnection(host, _port);
+  }
+
   Future<void> _handleRequest(HttpRequest request) async {
     try {
       final path = request.uri.path;
@@ -538,9 +573,11 @@ class SyncService {
           await _handleStatus(request);
           break;
         case '/sync/pull':
+          _maybeSaveRemoteHost(request);
           await _handlePull(request);
           break;
         case '/sync/push':
+          _maybeSaveRemoteHost(request);
           await _handlePush(request);
           break;
         default:
@@ -602,23 +639,27 @@ class SyncService {
     final body = utf8.decode(bytes);
     final data = jsonDecode(body) as Map<String, dynamic>;
     final merged = await _mergeRemoteData(data);
+    if (merged > 0) dataVersionNotifier.value++;
 
     // Also send back any newer local changes the client might need
     final db = await DatabaseHelper.instance.database;
-    final lastSync = await _getLastSyncTime();
+    final oldLastSync = await _getLastSyncTime();
     final newNodes = await db.query(
       'nodes',
       where: 'modified_at > ?',
-      whereArgs: [lastSync],
+      whereArgs: [oldLastSync],
     );
     final newContent = await db.rawQuery(
       'SELECT nc.* FROM note_content nc INNER JOIN nodes n ON n.id = nc.note_id WHERE n.modified_at > ?',
-      [lastSync],
+      [oldLastSync],
     );
     final newFts = await db.rawQuery(
       'SELECT fc.* FROM fts_content fc INNER JOIN nodes n ON n.id = fc.note_id WHERE n.modified_at > ?',
-      [lastSync],
+      [oldLastSync],
     );
+
+    // Update last_sync_time so future push responses only send recent changes
+    await _setLastSyncTime(DateTime.now().millisecondsSinceEpoch);
 
     _sendJson(request.response, {
       'merged': merged,

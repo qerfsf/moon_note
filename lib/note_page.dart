@@ -10,12 +10,14 @@ class NotePage extends StatefulWidget {
   final String noteId;
   final String initialTitle;
   final bool embedded;
+  final void Function(String newTitle)? onTitleChanged;
 
   const NotePage({
     super.key,
     required this.noteId,
     required this.initialTitle,
     this.embedded = false,
+    this.onTitleChanged,
   });
 
   @override
@@ -71,11 +73,11 @@ class _NotePageState extends State<NotePage> {
     if (widget.initialTitle == '未命名') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _titleController.selection = const TextSelection(
-            baseOffset: 0,
-            extentOffset: 3,
-          );
           _titleFocusNode.requestFocus();
+          _titleController.selection = TextSelection(
+            baseOffset: 0,
+            extentOffset: _titleController.text.length,
+          );
         }
       });
     }
@@ -169,8 +171,14 @@ class _NotePageState extends State<NotePage> {
     });
   }
 
-  void _scheduleSave() {
+  void _scheduleSave({bool immediateTitle = false}) {
     _saveDebounce?.cancel();
+    // Update title in sidebar immediately, debounce DB write
+    if (immediateTitle) {
+      final t = _titleController.text.trim();
+      final title = t.isEmpty ? '未命名' : t;
+      widget.onTitleChanged?.call(title);
+    }
     _saveDebounce = Timer(const Duration(milliseconds: 500), () {
       _doSave();
     });
@@ -232,9 +240,7 @@ class _NotePageState extends State<NotePage> {
     final contentChanged = _contentController.text != _loadedContent;
     await db.update(
       'nodes',
-      contentChanged
-          ? {'title': title, 'modified_at': now}
-          : {'title': title},
+      {'title': title, 'modified_at': now},
       where: 'id = ?',
       whereArgs: [widget.noteId],
     );
@@ -251,6 +257,7 @@ class _NotePageState extends State<NotePage> {
       'INSERT OR REPLACE INTO fts_content(note_id, title, content) VALUES(?, ?, ?)',
       [widget.noteId, title, _contentController.text],
     );
+    widget.onTitleChanged?.call(title);
     _isSaving = false;
   }
 
@@ -669,7 +676,7 @@ class _NotePageState extends State<NotePage> {
                     height: 1.3,
                   ),
                   cursorColor: _textPrimary,
-                  onChanged: (_) => _scheduleSave(),
+                  onChanged: (_) => _scheduleSave(immediateTitle: true),
                 ),
                 const SizedBox(height: 4),
                 SizedBox(
@@ -919,9 +926,12 @@ class _NotePageState extends State<NotePage> {
     final body = _buildBody();
 
     if (widget.embedded) {
-      return Container(
-        color: Theme.of(context).colorScheme.surface,
-        child: body,
+      return Material(
+        type: MaterialType.transparency,
+        child: Container(
+          color: Theme.of(context).colorScheme.surface,
+          child: body,
+        ),
       );
     }
 
