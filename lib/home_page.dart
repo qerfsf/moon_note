@@ -162,7 +162,7 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
       INNER JOIN nodes n ON n.id = f.note_id
       WHERE n.is_deleted = 0
         AND (f.title LIKE ? OR f.content LIKE ?)
-      ORDER BY n.modified_at DESC
+      ORDER BY n.content_modified_at DESC
       LIMIT 50
     ''', [like, like]);
   }
@@ -182,7 +182,7 @@ class _HomePageState extends State<HomePage> {
   bool _isSelecting = false;
   final Set<String> _selectedIds = {};
   Set<String> _reminderNoteIds = {};
-  String _sortField = 'modified_at';
+  String _sortField = 'content_modified_at';
   String _sortDir = 'DESC';
   DateTime? _lastBackPress;
   String? _hoveredId;
@@ -318,18 +318,23 @@ class _HomePageState extends State<HomePage> {
     _isSyncing = true;
     try {
       bool synced = false;
-      try {
-        final info = await SyncService.instance.getLastConnection();
-        final host = info['host'];
-        final port = int.tryParse(info['port'] ?? '') ?? 9090;
-        if (host != null && !SyncService.instance.isOwnAddress(host)) {
-          await SyncService.instance.fullSync(host, port);
-          synced = true;
-        }
-      } catch (_) {}
-      if (!synced && _isDesktop) {
+      if (_isDesktop) {
         try {
-          synced = await SyncService.instance.tryUsbSync();
+          synced = await SyncService.instance.tryUsbSync().timeout(
+            const Duration(seconds: 15),
+            onTimeout: () => false,
+          );
+        } catch (_) {}
+      }
+      if (!synced) {
+        try {
+          final info = await SyncService.instance.getLastConnection();
+          final host = info['host'];
+          final port = int.tryParse(info['port'] ?? '') ?? 9090;
+          if (host != null && !SyncService.instance.isOwnAddress(host)) {
+            await SyncService.instance.fullSync(host, port);
+            synced = true;
+          }
         } catch (_) {}
       }
       if (synced) {
@@ -435,6 +440,7 @@ class _HomePageState extends State<HomePage> {
         'is_system': 0,
         'created_at': now,
         'modified_at': now,
+        'content_modified_at': now,
       });
       await db.insert('note_content', {
         'note_id': id,
@@ -476,6 +482,7 @@ class _HomePageState extends State<HomePage> {
         'is_system': 0,
         'created_at': now,
         'modified_at': now,
+        'content_modified_at': now,
       });
       await db.insert('note_content', {
         'note_id': id,
@@ -749,6 +756,7 @@ class _HomePageState extends State<HomePage> {
       'sort_preference': node['sort_preference'],
       'created_at': now,
       'modified_at': now,
+      'content_modified_at': node['content_modified_at'] ?? now,
     });
 
     if (node['type'] == 'note') {
@@ -1570,39 +1578,35 @@ class _HomePageState extends State<HomePage> {
         if (mounted) setState(() => _hoveredId = null);
       },
       cursor: _isSelecting ? SystemMouseCursors.click : SystemMouseCursors.click,
-      child: Dismissible(
+      child: Listener(
+        onPointerDown: (d) => _dragStart = d.localPosition,
+        onPointerUp: (d) {
+          if (_dragStart == null || _isSelecting) return;
+          final dy = (d.localPosition.dy - _dragStart!.dy).abs();
+          final dx = (d.localPosition.dx - _dragStart!.dx).abs();
+          if (dy > 40 && dx < dy) {
+            setState(() {
+              _isSelecting = true;
+              _selectedIds.add(nodeId);
+            });
+          }
+          _dragStart = null;
+        },
+        child: Dismissible(
         key: Key(nodeId),
         direction: _isSelecting
             ? DismissDirection.none
-            : DismissDirection.horizontal,
+            : DismissDirection.endToStart,
         movementDuration: const Duration(milliseconds: 200),
         dismissThresholds:
-            const {DismissDirection.endToStart: 0.3, DismissDirection.startToEnd: 0.3},
+            const {DismissDirection.endToStart: 0.3},
         confirmDismiss: (direction) async {
-          if (direction == DismissDirection.startToEnd) {
-            if (!_isSelecting && !isFolder) {
-              setState(() {
-                _isSelecting = true;
-                _selectedIds.add(nodeId);
-              });
-            }
-            return false;
-          }
           if (isSystem) return false;
           setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
           _deleteNode(node);
           return true;
         },
-        background: Container(
-          alignment: Alignment.centerLeft,
-          padding: const EdgeInsets.only(left: 24),
-          color: isFolder ? _textTertiary : _bgHover,
-          child: Icon(
-            isFolder ? Icons.block : Icons.checklist_outlined,
-            size: 22,
-            color: Colors.white,
-          ),
-        ),
+        background: const SizedBox.shrink(),
         secondaryBackground: Container(
           alignment: Alignment.centerRight,
           padding: const EdgeInsets.only(right: 24),
@@ -1695,7 +1699,7 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                       Text(
-                        _formatDate(node['modified_at'] as int),
+                        _formatDate((node['content_modified_at'] ?? node['modified_at']) as int),
                         style: TextStyle(
                           fontSize: 11,
                           color: _textTertiary,
@@ -1740,6 +1744,7 @@ class _HomePageState extends State<HomePage> {
                   Icon(Icons.chevron_right, size: 16, color: _borderLight),
               ],
             ),
+          ),
           ),
         ),
       ),
@@ -2082,7 +2087,7 @@ class _HomePageState extends State<HomePage> {
                         fontWeight: FontWeight.w500)),
               ),
             ),
-            _sortOption(context, '修改时间', 'modified_at', 'DESC'),
+            _sortOption(context, '修改时间', 'content_modified_at', 'DESC'),
             _sortOption(context, '创建时间', 'created_at', 'DESC'),
             _sortOption(context, '标题 A-Z', 'title', 'ASC'),
             _sortOption(context, '标题 Z-A', 'title', 'DESC'),

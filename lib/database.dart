@@ -16,7 +16,7 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 5, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 7, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
@@ -35,7 +35,8 @@ class DatabaseHelper {
         sort_preference TEXT DEFAULT 'modified_desc',
         created_at INTEGER NOT NULL,
         modified_at INTEGER NOT NULL,
-        is_system INTEGER NOT NULL DEFAULT 0
+        is_system INTEGER NOT NULL DEFAULT 0,
+        content_modified_at INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -113,6 +114,13 @@ class DatabaseHelper {
         LEFT JOIN note_content nc ON nc.note_id = n.id
         WHERE n.type = 'note' AND n.is_deleted = 0
       ''');
+    }
+    if (oldVersion < 6) {
+      await db.execute('ALTER TABLE nodes ADD COLUMN content_modified_at INTEGER NOT NULL DEFAULT 0');
+      await db.execute('UPDATE nodes SET content_modified_at = modified_at');
+    }
+    if (oldVersion < 7) {
+      await db.rawInsert("INSERT OR REPLACE INTO app_settings(key, value) VALUES('last_sync_time', '0')");
     }
   }
 

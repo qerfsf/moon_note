@@ -238,9 +238,16 @@ class _NotePageState extends State<NotePage> {
       if (title.length > 50) title = title.substring(0, 50);
     }
     final contentChanged = _contentController.text != _loadedContent;
+    final updateMap = <String, dynamic>{
+      'title': title,
+      'modified_at': now,
+    };
+    if (contentChanged) {
+      updateMap['content_modified_at'] = now;
+    }
     await db.update(
       'nodes',
-      {'title': title, 'modified_at': now},
+      updateMap,
       where: 'id = ?',
       whereArgs: [widget.noteId],
     );
@@ -312,7 +319,7 @@ class _NotePageState extends State<NotePage> {
       'nodes',
       where: 'type = ? AND is_deleted = 0 AND id != ?',
       whereArgs: ['note', widget.noteId],
-      orderBy: 'modified_at DESC',
+      orderBy: 'content_modified_at DESC',
       limit: 100,
     );
     if (!mounted) return;
