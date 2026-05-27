@@ -79,7 +79,7 @@ class SyncService {
     return false;
   }
 
-  String? get _adbPath {
+  String get _adbPath {
     final androidHome =
         Platform.environment['ANDROID_HOME'] ?? Platform.environment['ANDROID_SDK_ROOT'];
     if (androidHome != null) {
@@ -91,12 +91,24 @@ class SyncService {
       final path = '$localAppData${Platform.pathSeparator}Android${Platform.pathSeparator}Sdk${Platform.pathSeparator}platform-tools${Platform.pathSeparator}adb${Platform.isWindows ? '.exe' : ''}';
       if (File(path).existsSync()) return path;
     }
+    // Fallback: try common locations
+    final fallbacks = Platform.isWindows ? [
+      'C:\\Users\\${Platform.environment['USERNAME']}\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe',
+      'C:\\Android\\Sdk\\platform-tools\\adb.exe',
+      'D:\\Android\\Sdk\\platform-tools\\adb.exe',
+    ] : <String>[];
+    for (final fb in fallbacks) {
+      if (File(fb).existsSync()) return fb;
+    }
     return 'adb';
   }
 
   Future<List<String>> getAdbDevices() async {
     try {
-      final result = await Process.run(_adbPath!, ['devices']);
+      final result = await Process.run(_adbPath, ['devices']).timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => ProcessResult(0, 0, '', ''),
+      );
       final lines = (result.stdout as String).split('\n');
       final devices = <String>[];
       for (final line in lines.skip(1)) {
@@ -113,7 +125,7 @@ class SyncService {
   Future<bool> setupAdbReverse({int port = 9090}) async {
     try {
       final result =
-          await Process.run(_adbPath!, ['reverse', 'tcp:$port', 'tcp:$port']);
+          await Process.run(_adbPath, ['reverse', 'tcp:$port', 'tcp:$port']);
       return result.exitCode == 0;
     } catch (_) {
       return false;
@@ -123,7 +135,7 @@ class SyncService {
   Future<bool> removeAdbReverse({int port = 9090}) async {
     try {
       final result = await Process.run(
-          _adbPath!, ['reverse', '--remove', 'tcp:$port']);
+          _adbPath, ['reverse', '--remove', 'tcp:$port']);
       return result.exitCode == 0;
     } catch (_) {
       return false;
@@ -133,17 +145,29 @@ class SyncService {
   Future<bool> setupAdbForward({int localPort = 9091, int remotePort = 9090}) async {
     try {
       final result = await Process.run(
-          _adbPath!, ['forward', 'tcp:$localPort', 'tcp:$remotePort']);
+          _adbPath, ['forward', 'tcp:$localPort', 'tcp:$remotePort']);
       return result.exitCode == 0;
     } catch (_) {
       return false;
     }
   }
 
+  Future<String?> _getDeviceWifiIp(String deviceId) async {
+    try {
+      final result = await Process.run(
+          _adbPath, ['-s', deviceId, 'shell', 'ip', 'addr', 'show', 'wlan0']);
+      final output = result.stdout as String;
+      final match = RegExp(r'inet (\d+\.\d+\.\d+\.\d+)/').firstMatch(output);
+      return match?.group(1);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<bool> removeAdbForward({int localPort = 9091}) async {
     try {
       final result = await Process.run(
-          _adbPath!, ['forward', '--remove', 'tcp:$localPort']);
+          _adbPath, ['forward', '--remove', 'tcp:$localPort']);
       return result.exitCode == 0;
     } catch (_) {
       return false;
@@ -154,7 +178,6 @@ class SyncService {
     if (_adbMonitorProcess != null) return;
     try {
       final adb = _adbPath;
-      if (adb == null) return;
       _adbMonitorProcess = await Process.start(adb, ['track-devices']);
       _knownAdbDevices.clear();
       var isFirst = true;
@@ -264,29 +287,37 @@ class SyncService {
       try {
         await Future.delayed(const Duration(milliseconds: 200));
         bool connected = false;
-        for (int i = 0; i < 2; i++) {
-          final client = HttpClient();
-          client.connectionTimeout = const Duration(seconds: 1);
-          try {
-            final req = await client.getUrl(
-              Uri(scheme: 'http', host: '127.0.0.1', port: 9091, path: '/sync/status'),
-            );
-            final res = await req.close().timeout(const Duration(seconds: 1));
-            client.close();
-            if (res.statusCode == 200) {
-              connected = true;
-              break;
-            }
-          } catch (_) {
-            client.close();
+        HttpClient? checkClient;
+        try {
+          for (int i = 0; i < 2; i++) {
+            checkClient = HttpClient();
+            checkClient.connectionTimeout = const Duration(seconds: 1);
+            try {
+              final req = await checkClient.getUrl(
+                Uri(scheme: 'http', host: '127.0.0.1', port: 9091, path: '/sync/status'),
+              );
+              final res = await req.close().timeout(const Duration(seconds: 1));
+              if (res.statusCode == 200) {
+                connected = true;
+                break;
+              }
+            } catch (_) {}
+            if (i == 0) await Future.delayed(const Duration(milliseconds: 300));
           }
-          if (i == 0) await Future.delayed(const Duration(milliseconds: 300));
+        } finally {
+          checkClient?.close();
         }
         if (!connected) {
           messageNotifier.value = 'USB: 无法连接到手机服务';
           return false;
         }
         await fullSync('127.0.0.1', 9091, saveConnection: false);
+        try {
+          final wifiIp = await _getDeviceWifiIp(devices.first);
+          if (wifiIp != null) {
+            await saveLastConnection(wifiIp, 9090);
+          }
+        } catch (_) {}
         return true;
       } finally {
         await removeAdbForward(localPort: 9091);
@@ -359,10 +390,10 @@ class SyncService {
   Future<Map<String, dynamic>> pullFrom(String host, int port) async {
     statusNotifier.value = SyncStatus.syncing;
     messageNotifier.value = '正在拉取变更...';
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 1);
     try {
       final lastSync = await _getLastSyncTime();
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 1);
       final request = await client.postUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/pull'),
       );
@@ -375,7 +406,6 @@ class SyncService {
         throw Exception('服务器返回 ${response.statusCode}');
       }
       final body = await utf8.decodeStream(response);
-      client.close();
       final data = jsonDecode(body) as Map<String, dynamic>;
       final merged = await _mergeRemoteData(data);
       await _setLastSyncTime(data['server_time'] as int);
@@ -386,12 +416,16 @@ class SyncService {
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '拉取失败: $e';
       rethrow;
+    } finally {
+      client.close();
     }
   }
 
   Future<Map<String, dynamic>> pushTo(String host, int port) async {
     statusNotifier.value = SyncStatus.syncing;
     messageNotifier.value = '正在推送变更...';
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 1);
     try {
       final lastSync = await _getLastSyncTime();
       final db = await DatabaseHelper.instance.database;
@@ -410,8 +444,6 @@ class SyncService {
         [lastSync],
       );
 
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 1);
       final request = await client.postUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/push'),
       );
@@ -428,9 +460,7 @@ class SyncService {
         throw Exception('服务器返回 ${response.statusCode}');
       }
       final body = await utf8.decodeStream(response);
-      client.close();
       final data = jsonDecode(body) as Map<String, dynamic>;
-      // Server may return additional updates to merge
       if (data['nodes'] != null) {
         await _mergeRemoteData(data);
       }
@@ -442,15 +472,17 @@ class SyncService {
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '推送失败: $e';
       rethrow;
+    } finally {
+      client.close();
     }
   }
 
   Future<int> fullSync(String host, int port, {bool saveConnection = true}) async {
     statusNotifier.value = SyncStatus.connecting;
     messageNotifier.value = '正在检查连接...';
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 1);
     try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 1);
       final statusReq = await client.getUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/status'),
       );
@@ -458,15 +490,15 @@ class SyncService {
             const Duration(seconds: 1),
           );
       if (statusRes.statusCode != 200) {
-        client.close();
         throw Exception('无法连接到同步服务');
       }
-      client.close();
     } catch (e) {
+      client.close();
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '连接失败: $e';
       rethrow;
     }
+    client.close();
 
     await pushTo(host, port);
     await pullFrom(host, port);

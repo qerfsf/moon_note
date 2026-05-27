@@ -27,12 +27,21 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
 
   Future<void> _loadItems() async {
     final db = await DatabaseHelper.instance.database;
-    final items = await db.query(
-      'nodes',
-      where: 'is_deleted = 1',
-      orderBy: 'deleted_at DESC',
-    );
-    setState(() => _items = items);
+    final items = await db.rawQuery('''
+      SELECT n.* FROM nodes n
+      WHERE n.is_deleted = 1
+      AND NOT (
+        n.type = 'note'
+        AND n.title = '未命名'
+        AND (SELECT COALESCE(content, '') FROM note_content WHERE note_id = n.id) = ''
+      )
+      AND NOT (
+        n.type = 'folder'
+        AND (SELECT COUNT(*) FROM nodes WHERE parent_id = n.id) = 0
+      )
+      ORDER BY n.deleted_at DESC
+    ''');
+    if (mounted) setState(() => _items = items);
   }
 
   String _formatDate(int timestamp) {
