@@ -518,7 +518,6 @@ class SyncService {
       final pendingDeletes = List<String>.from(_pendingDeleteIds);
       if (pendingDeletes.isNotEmpty) {
         payload['deleted_ids'] = pendingDeletes;
-        _pendingDeleteIds.clear();
         print('[PUSH] 包含 ${pendingDeletes.length} 个永久删除 ID');
       }
       request.write(jsonEncode(payload));
@@ -532,6 +531,9 @@ class SyncService {
       final data = jsonDecode(body) as Map<String, dynamic>;
       if (data['nodes'] != null) {
         await _mergeRemoteData(data);
+      }
+      if (pendingDeletes.isNotEmpty) {
+        _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
       }
       print('[PUSH] 完成 (${nodes.length} 节点)');
       messageNotifier.value =
@@ -668,13 +670,8 @@ class SyncService {
   }
 
   Map<String, dynamic> _toDbMap(Map<String, dynamic> map) {
-    final db = <String, dynamic>{};
-    for (final entry in map.entries) {
-      if (entry.value != null) {
-        db[entry.key] = entry.value;
-      }
-    }
-    return db;
+    // Keep null values — sqflite batch.update sets columns to null when present
+    return Map<String, dynamic>.from(map);
   }
 
   void _maybeSaveRemoteHost(HttpRequest request) {
@@ -756,10 +753,12 @@ class SyncService {
     final pendingDeletes = List<String>.from(_pendingDeleteIds);
     if (pendingDeletes.isNotEmpty) {
       pullPayload['deleted_ids'] = pendingDeletes;
-      _pendingDeleteIds.clear();
       print('[SERVER] 拉取响应包含 ${pendingDeletes.length} 个永久删除 ID');
     }
     _sendJson(request.response, pullPayload);
+    if (pendingDeletes.isNotEmpty) {
+      _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
+    }
   }
 
   Future<void> _handlePush(HttpRequest request) async {
@@ -803,10 +802,12 @@ class SyncService {
     final pendingDeletes = List<String>.from(_pendingDeleteIds);
     if (pendingDeletes.isNotEmpty) {
       responsePayload['deleted_ids'] = pendingDeletes;
-      _pendingDeleteIds.clear();
       print('[SERVER] 响应包含 ${pendingDeletes.length} 个永久删除 ID');
     }
     _sendJson(request.response, responsePayload);
+    if (pendingDeletes.isNotEmpty) {
+      _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
+    }
   }
 
   void _sendJson(HttpResponse response, Map<String, dynamic> data,
