@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'database.dart';
+import 'sync_service.dart';
 
 class RecycleBinPage extends StatefulWidget {
   const RecycleBinPage({super.key});
@@ -12,6 +13,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
   List<Map<String, dynamic>> _items = [];
   bool _isSelecting = false;
   final Set<String> _selectedIds = {};
+  int _totalDeletedCount = 0;
 
   Color get _textPrimary => Theme.of(context).colorScheme.onSurface;
   Color get _textSecondary => Theme.of(context).colorScheme.onSurfaceVariant;
@@ -41,7 +43,15 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
       )
       ORDER BY n.deleted_at DESC
     ''');
-    if (mounted) setState(() => _items = items);
+    final total = await db.rawQuery(
+      'SELECT COUNT(*) as c FROM nodes WHERE is_deleted = 1',
+    );
+    if (mounted) {
+      setState(() {
+        _items = items;
+        _totalDeletedCount = (total.first['c'] as int?) ?? 0;
+      });
+    }
   }
 
   String _formatDate(int timestamp) {
@@ -52,29 +62,34 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
 
   Future<void> _restore(String id) async {
     final db = await DatabaseHelper.instance.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
     await db.update(
       'nodes',
-      {'is_deleted': 0, 'deleted_at': null},
+      {'is_deleted': 0, 'deleted_at': null, 'modified_at': now},
       where: 'id = ?',
       whereArgs: [id],
     );
     await _loadItems();
+    SyncService.instance.dataVersionNotifier.value++;
   }
 
   Future<void> _permanentDelete(String id) async {
+    SyncService.instance.addPendingDelete(id);
     final db = await DatabaseHelper.instance.database;
     await db.delete('note_content', where: 'note_id = ?', whereArgs: [id]);
     await db.delete('fts_content', where: 'note_id = ?', whereArgs: [id]);
     await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
     await _loadItems();
+    SyncService.instance.dataVersionNotifier.value++;
   }
 
   Future<void> _batchRestore() async {
     final db = await DatabaseHelper.instance.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
     for (final id in _selectedIds) {
       await db.update(
         'nodes',
-        {'is_deleted': 0, 'deleted_at': null},
+        {'is_deleted': 0, 'deleted_at': null, 'modified_at': now},
         where: 'id = ?',
         whereArgs: [id],
       );
@@ -84,6 +99,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
       _isSelecting = false;
     });
     await _loadItems();
+    SyncService.instance.dataVersionNotifier.value++;
   }
 
   Future<void> _batchDelete() async {
@@ -113,6 +129,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
       ),
     );
     if (confirmed != true) return;
+    SyncService.instance.addPendingDeletes(_selectedIds.toList());
     final db = await DatabaseHelper.instance.database;
     for (final id in _selectedIds) {
       await db.delete('note_content',
@@ -126,10 +143,18 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
       _isSelecting = false;
     });
     await _loadItems();
+    SyncService.instance.dataVersionNotifier.value++;
   }
 
   Future<void> _emptyAll() async {
-    if (_items.isEmpty) return;
+    final db = await DatabaseHelper.instance.database;
+    // Count ALL deleted nodes, including filtered-out empty ones
+    final allDeleted = await db.rawQuery(
+      'SELECT COUNT(*) as c FROM nodes WHERE is_deleted = 1',
+    );
+    final totalCount = (allDeleted.first['c'] as int?) ?? 0;
+    if (totalCount == 0) return;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -138,7 +163,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
                 fontSize: 17,
                 fontWeight: FontWeight.w600,
                 color: _textPrimary)),
-        content: Text('确定永久删除回收站中的 ${_items.length} 项吗？此操作不可撤销。',
+        content: Text('确定永久删除回收站中的 $totalCount 项吗？此操作不可撤销。',
             style: TextStyle(fontSize: 15, color: _textSecondary)),
         actions: [
           TextButton(
@@ -156,16 +181,23 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
       ),
     );
     if (confirmed != true) return;
-    final db = await DatabaseHelper.instance.database;
-    for (final item in _items) {
-      final id = item['id'] as String;
-      await db.delete('note_content',
-          where: 'note_id = ?', whereArgs: [id]);
-      await db.delete('fts_content',
-          where: 'note_id = ?', whereArgs: [id]);
-      await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
-    }
+
+    // Get ALL deleted IDs (not just visible ones)
+    final allRows = await db.query('nodes',
+        columns: ['id', 'type'],
+        where: 'is_deleted = 1');
+    final ids = allRows.map((r) => r['id'] as String).toList();
+    SyncService.instance.addPendingDeletes(ids);
+
+    // Delete all note_content and fts_content for deleted notes
+    await db.rawDelete(
+      'DELETE FROM note_content WHERE note_id IN (SELECT id FROM nodes WHERE is_deleted = 1)');
+    await db.rawDelete(
+      'DELETE FROM fts_content WHERE note_id IN (SELECT id FROM nodes WHERE is_deleted = 1)');
+    await db.delete('nodes', where: 'is_deleted = 1');
     await _loadItems();
+    SyncService.instance.dataVersionNotifier.value++;
+    print('[BIN] 清空回收站: 删除了 $totalCount 个节点 (含隐藏的空笔记/空文件夹)');
   }
 
   void _exitSelection() {
@@ -229,7 +261,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
                   ],
                 ]
               : [
-                  if (_items.isNotEmpty)
+                  if (_totalDeletedCount > 0)
                     IconButton(
                       icon: Icon(Icons.delete_sweep_outlined,
                           size: 20, color: _textSecondary),
@@ -245,7 +277,9 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
         ),
         body: _items.isEmpty
             ? Center(
-                child: Text('回收站为空',
+                child: Text(_totalDeletedCount > 0
+                    ? '回收站中有 $_totalDeletedCount 项可清理'
+                    : '回收站为空',
                     style: TextStyle(
                         color: _textTertiary, fontSize: 14)),
               )
