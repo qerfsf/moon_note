@@ -395,6 +395,16 @@ class SyncService {
     _knownAdbDevices.clear();
   }
 
+  Future<String> _getSyncKey() async {
+    final db = await DatabaseHelper.instance.database;
+    final result = await db.query(
+      'app_settings',
+      where: 'key = ?',
+      whereArgs: ['sync_key'],
+    );
+    return result.isNotEmpty ? result.first['value'] as String : '';
+  }
+
   Future<int> _getLastSyncTime() async {
     final db = await DatabaseHelper.instance.database;
     final result = await db.query(
@@ -455,7 +465,10 @@ class SyncService {
         Uri(scheme: 'http', host: host, port: port, path: '/sync/pull'),
       );
       request.headers.contentType = ContentType.json;
-      request.write(jsonEncode({'last_sync': lastSync}));
+      request.write(jsonEncode({
+        'last_sync': lastSync,
+        'sync_key': await _getSyncKey(),
+      }));
       final response = await request.close().timeout(
             const Duration(seconds: 10),
           );
@@ -467,7 +480,11 @@ class SyncService {
       final merged = await _mergeRemoteData(data);
       await _setLastSyncTime(data['server_time'] as int);
       print('[PULL] 完成: 合并 $merged 项');
-      messageNotifier.value = '拉取完成，合并 $merged 项';
+      if (data['sync_key_mismatch'] == true) {
+        messageNotifier.value = '拉取完成，合并 $merged 项（注意: sync_key 不匹配）';
+      } else {
+        messageNotifier.value = '拉取完成，合并 $merged 项';
+      }
       statusNotifier.value = SyncStatus.idle;
       return data;
     } catch (e) {
@@ -514,6 +531,7 @@ class SyncService {
         'nodes': nodes,
         'content': content,
         'fts': fts,
+        'sync_key': await _getSyncKey(),
       };
       final pendingDeletes = List<String>.from(_pendingDeleteIds);
       if (pendingDeletes.isNotEmpty) {
@@ -536,8 +554,11 @@ class SyncService {
         _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
       }
       print('[PUSH] 完成 (${nodes.length} 节点)');
-      messageNotifier.value =
-          '推送完成 (${nodes.length} 节点)';
+      if (data['sync_key_mismatch'] == true) {
+        messageNotifier.value = '推送完成 (${nodes.length} 节点)（注意: sync_key 不匹配）';
+      } else {
+        messageNotifier.value = '推送完成 (${nodes.length} 节点)';
+      }
       statusNotifier.value = SyncStatus.idle;
       return data;
     } catch (e) {
@@ -711,9 +732,14 @@ class SyncService {
     final count = await db.rawQuery(
       'SELECT COUNT(*) as c FROM nodes WHERE is_deleted = 0',
     );
+    final settings = await db.query('app_settings');
+    String getSetting(String key) =>
+        settings.where((r) => r['key'] == key).firstOrNull?['value'] as String? ?? '';
     _sendJson(request.response, {
-      'version': '1.0.0',
+      'version': '3.0.0',
       'device': Platform.localHostname,
+      'sync_key': getSetting('sync_key'),
+      'device_name': getSetting('device_name'),
       'node_count': count.first['c'],
       'time': DateTime.now().millisecondsSinceEpoch,
     });
@@ -744,11 +770,15 @@ class SyncService {
     final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
     print('[SERVER] 响应拉取 since=$lastSync: ${nodes.length} 节点 (含 $deletedCount 已删除)');
 
+    final clientKey = req['sync_key'] as String? ?? '';
+    final myKey = await _getSyncKey();
     final pullPayload = <String, dynamic>{
       'nodes': nodes,
       'content': content,
       'fts': fts,
       'server_time': DateTime.now().millisecondsSinceEpoch,
+      'sync_key': myKey,
+      'sync_key_mismatch': clientKey.isNotEmpty && myKey.isNotEmpty && clientKey != myKey,
     };
     final pendingDeletes = List<String>.from(_pendingDeleteIds);
     if (pendingDeletes.isNotEmpty) {
@@ -767,6 +797,12 @@ class SyncService {
     final body = utf8.decode(bytes);
     final data = jsonDecode(body) as Map<String, dynamic>;
     final nodes = data['nodes'] as List? ?? [];
+    final clientKey = data['sync_key'] as String? ?? '';
+    final myKey = await _getSyncKey();
+    final keyMismatch = clientKey.isNotEmpty && myKey.isNotEmpty && clientKey != myKey;
+    if (keyMismatch) {
+      print('[SERVER] 警告: sync_key 不匹配 (client=$clientKey, server=$myKey)');
+    }
     final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
     print('[SERVER] 收到推送: ${nodes.length} 节点 (含 $deletedCount 已删除)');
     final merged = await _mergeRemoteData(data);
@@ -798,6 +834,8 @@ class SyncService {
       'nodes': newNodes,
       'content': newContent,
       'fts': newFts,
+      'sync_key': myKey,
+      'sync_key_mismatch': keyMismatch,
     };
     final pendingDeletes = List<String>.from(_pendingDeleteIds);
     if (pendingDeletes.isNotEmpty) {

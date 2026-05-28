@@ -221,6 +221,7 @@ class _HomePageState extends State<HomePage> {
     });
     _refresh();
     NotificationService.instance.onQuickNote = _onQuickNote;
+    NotificationService.instance.drainPendingQuickNote();
     if (!_isDesktop) _checkBatteryOptimization();
     _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) => _trySync(showToast: false));
     SyncService.instance.dataVersionNotifier.addListener(_onRemoteDataChanged);
@@ -251,7 +252,7 @@ class _HomePageState extends State<HomePage> {
                       fontWeight: FontWeight.w600,
                       color: _textPrimary)),
               content: Text(
-                'Moon Note 需要在后台运行以提供同步和提醒功能。\n\n请关闭电池优化以保持应用持续运行。',
+                'Moon Note 需要在后台运行以提供同步和快捷笔记功能。\n\n1. 请关闭电池优化\n2. 请开启「后台弹出界面」权限',
                 style: TextStyle(fontSize: 15, color: _textSecondary),
               ),
               actions: [
@@ -266,7 +267,16 @@ class _HomePageState extends State<HomePage> {
                     NotificationService.instance
                         .requestBatteryOptimization();
                   },
-                  child: Text('去设置',
+                  child: Text('电池优化',
+                      style: TextStyle(color: _textPrimary, fontSize: 14)),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    NotificationService.instance
+                        .openBackgroundPopupPermission();
+                  },
+                  child: Text('后台弹出',
                       style: TextStyle(color: _textPrimary, fontSize: 14)),
                 ),
               ],

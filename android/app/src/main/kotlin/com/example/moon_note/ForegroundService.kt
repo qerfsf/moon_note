@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 
 class ForegroundService : Service() {
 
@@ -33,6 +34,7 @@ class ForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.d("MoonNote", "ForegroundService: onCreate, using icon ic_notification")
         createChannel()
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -45,7 +47,7 @@ class ForegroundService : Service() {
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Moon Note")
             .setContentText("后台运行中")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
             .build()
