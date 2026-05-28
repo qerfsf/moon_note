@@ -10,6 +10,7 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   VoidCallback? onQuickNote;
+  bool _hasPendingQuickNote = false;
 
   static const _channelId = 'moon_note_quick';
   static const _channelName = '快速记录';
@@ -20,7 +21,11 @@ class NotificationService {
     // Listen for quick-note commands from native (Quick Settings tile, etc.)
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'onQuickNote') {
-        onQuickNote?.call();
+        if (onQuickNote != null) {
+          onQuickNote!.call();
+        } else {
+          _hasPendingQuickNote = true;
+        }
       }
     });
 
@@ -48,8 +53,16 @@ class NotificationService {
       final hasPending =
           await _channel.invokeMethod('checkPendingQuickNote');
       if (hasPending == true) {
-        onQuickNote?.call();
+        _hasPendingQuickNote = true;
       }
+    }
+  }
+
+  /// Call this after the UI is ready to handle any pending quick-note action.
+  void drainPendingQuickNote() {
+    if (_hasPendingQuickNote && onQuickNote != null) {
+      _hasPendingQuickNote = false;
+      onQuickNote!.call();
     }
   }
 
@@ -95,6 +108,12 @@ class NotificationService {
   Future<void> requestBatteryOptimization() async {
     try {
       await _channel.invokeMethod('requestBatteryOptimization');
+    } catch (_) {}
+  }
+
+  Future<void> openBackgroundPopupPermission() async {
+    try {
+      await _channel.invokeMethod('openBackgroundPopupPermission');
     } catch (_) {}
   }
 

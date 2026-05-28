@@ -1,5 +1,19 @@
+import 'dart:math';
+
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+
+String _generateShortKey() {
+  final r = Random();
+  const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
+  return List.generate(6, (_) => chars[r.nextInt(chars.length)]).join();
+}
+
+String _generateUuid() {
+  final r = Random();
+  final hex = List.generate(32, (_) => r.nextInt(16).toRadixString(16)).join();
+  return '${hex.substring(0,8)}-${hex.substring(8,12)}-${hex.substring(12,16)}-${hex.substring(16,20)}-${hex.substring(20,32)}';
+}
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -16,7 +30,7 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 7, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 8, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
@@ -122,6 +136,20 @@ class DatabaseHelper {
     if (oldVersion < 7) {
       await db.rawInsert("INSERT OR REPLACE INTO app_settings(key, value) VALUES('last_sync_time', '0')");
     }
+    if (oldVersion < 8) {
+      await db.rawInsert(
+        "INSERT OR IGNORE INTO app_settings(key, value) VALUES('sync_key', ?)",
+        ['moon-${_generateShortKey()}'],
+      );
+      await db.rawInsert(
+        "INSERT OR IGNORE INTO app_settings(key, value) VALUES('device_id', ?)",
+        [_generateUuid()],
+      );
+      await db.rawInsert(
+        "INSERT OR IGNORE INTO app_settings(key, value) VALUES('device_name', ?)",
+        ['Moon'],
+      );
+    }
   }
 
   Future _insertSystemFolders(Database db) async {
@@ -164,6 +192,9 @@ class DatabaseHelper {
       'font_size': '16',
       'recycle_bin_limit_gb': '10',
       'lan_sync_enabled': '1',
+      'sync_key': 'moon-${_generateShortKey()}',
+      'device_id': _generateUuid(),
+      'device_name': 'Moon',
     };
 
     for (final entry in defaults.entries) {
