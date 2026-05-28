@@ -231,6 +231,7 @@ class _HomePageState extends State<HomePage> {
     _titleEditFocusNode.dispose();
     _titleEditController.dispose();
     _syncTimer?.cancel();
+    _quickSyncTimer?.cancel();
     SyncService.instance.dataVersionNotifier.removeListener(_onRemoteDataChanged);
     super.dispose();
   }
@@ -314,17 +315,20 @@ class _HomePageState extends State<HomePage> {
   void _onRemoteDataChanged() => _loadNodes();
 
   Future<void> _trySync({bool showToast = true}) async {
-    if (_isSyncing) return;
+    if (_isSyncing) {
+      print('[SYNC] 跳过: 上一次同步仍在进行中');
+      return;
+    }
     _isSyncing = true;
+    print('[SYNC] 开始同步...');
     try {
       bool synced = false;
       if (_isDesktop) {
         try {
-          synced = await SyncService.instance.tryUsbSync().timeout(
-            const Duration(seconds: 15),
-            onTimeout: () => false,
-          );
-        } catch (_) {}
+          synced = await SyncService.instance.tryUsbSync();
+        } catch (e) {
+          print('[SYNC] USB 同步异常: $e');
+        }
       }
       if (!synced) {
         try {
@@ -332,13 +336,19 @@ class _HomePageState extends State<HomePage> {
           final host = info['host'];
           final port = int.tryParse(info['port'] ?? '') ?? 9090;
           if (host != null && !SyncService.instance.isOwnAddress(host)) {
+            print('[SYNC] USB 未成功，尝试 WiFi 同步 $host:$port');
             await SyncService.instance.fullSync(host, port);
             synced = true;
+          } else {
+            print('[SYNC] 无可用 WiFi 连接');
           }
-        } catch (_) {}
+        } catch (e) {
+          print('[SYNC] WiFi 同步异常: $e');
+        }
       }
       if (synced) {
         await _loadNodes();
+        print('[SYNC] 同步完成');
         if (showToast && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -348,6 +358,8 @@ class _HomePageState extends State<HomePage> {
             ),
           );
         }
+      } else {
+        print('[SYNC] 本次未执行同步（无设备/无连接）');
       }
     } finally {
       _isSyncing = false;
@@ -453,6 +465,7 @@ class _HomePageState extends State<HomePage> {
         'content': '',
       });
       await _loadNodes();
+      _scheduleQuickSync();
       if (_isDesktop && !isJournal) {
         setState(() {
           _selectedNoteId = id;
@@ -580,6 +593,16 @@ class _HomePageState extends State<HomePage> {
       where: 'id = ?',
       whereArgs: [node['id']],
     );
+    _scheduleQuickSync();
+  }
+
+  /// Debounced sync trigger — avoids hammering on rapid operations
+  Timer? _quickSyncTimer;
+  void _scheduleQuickSync() {
+    _quickSyncTimer?.cancel();
+    _quickSyncTimer = Timer(const Duration(seconds: 2), () {
+      _trySync(showToast: false);
+    });
   }
 
   Future<void> _permanentDelete(Database db, Map<String, dynamic> node) async {
@@ -627,6 +650,7 @@ class _HomePageState extends State<HomePage> {
     }
     _exitSelection();
     await _loadNodes();
+    _scheduleQuickSync();
   }
 
   Future<void> _batchMove() async {
@@ -798,6 +822,7 @@ class _HomePageState extends State<HomePage> {
       whereArgs: [node['id']],
     );
     await _loadNodes();
+    _scheduleQuickSync();
   }
 
   Widget _buildAppBarTitle() {

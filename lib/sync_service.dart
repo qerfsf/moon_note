@@ -29,7 +29,24 @@ class SyncService {
   Timer? _adbDebounce;
   final List<String> _adbPendingLines = [];
   int _lastAdbSyncTime = 0;
+  int _lockAcquiredAt = 0;
   static const _adbSyncCooldownMs = 10000;
+  static const _lockWatchdogMs = 60000;
+  final List<String> _pendingDeleteIds = [];
+
+  void addPendingDelete(String id) {
+    if (!_pendingDeleteIds.contains(id)) {
+      _pendingDeleteIds.add(id);
+    }
+  }
+
+  void addPendingDeletes(List<String> ids) {
+    for (final id in ids) {
+      if (!_pendingDeleteIds.contains(id)) {
+        _pendingDeleteIds.add(id);
+      }
+    }
+  }
   void Function(String host, int port)? onAdbDeviceConnected;
 
   bool get isServerRunning => _isServerRunning;
@@ -262,28 +279,49 @@ class SyncService {
 
   void releaseAdbSyncLock() {
     _adbSyncLock = false;
+    _lockAcquiredAt = 0;
     if (_adbSyncPending) {
       _adbSyncPending = false;
       _adbSyncLock = true;
+      _lockAcquiredAt = DateTime.now().millisecondsSinceEpoch;
       _runAdbSync();
     }
   }
 
   Future<bool> tryUsbSync() async {
-    if (_adbSyncLock) return false;
+    // Watchdog: force-release if lock stuck for too long
+    if (_adbSyncLock) {
+      final heldMs = DateTime.now().millisecondsSinceEpoch - _lockAcquiredAt;
+      if (heldMs > _lockWatchdogMs) {
+        print('[USB] 锁已被持有 ${heldMs}ms，强制释放');
+        _adbSyncLock = false;
+      } else {
+        print('[USB] 跳过: 锁被持有中 (${heldMs}ms)');
+        return false;
+      }
+    }
     _adbSyncLock = true;
+    _lockAcquiredAt = DateTime.now().millisecondsSinceEpoch;
+    print('[USB] 获取锁，开始同步');
     try {
-      final devices = await getAdbDevices();
+      final devices = await getAdbDevices().timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => <String>[],
+      );
       if (devices.isEmpty) {
+        print('[USB] 未检测到设备');
         messageNotifier.value = 'USB: 未检测到设备';
         return false;
       }
+      print('[USB] 检测到设备: ${devices.first}');
       await removeAdbForward(localPort: 9091);
       final ok = await setupAdbForward(localPort: 9091, remotePort: 9090);
       if (!ok) {
+        print('[USB] 端口转发失败');
         messageNotifier.value = 'USB: 端口转发失败';
         return false;
       }
+      print('[USB] 端口转发已建立: 9091 → 9090');
       try {
         await Future.delayed(const Duration(milliseconds: 200));
         bool connected = false;
@@ -301,31 +339,49 @@ class SyncService {
                 connected = true;
                 break;
               }
-            } catch (_) {}
+            } catch (e) {
+              print('[USB] 连接检查 $i 失败: $e');
+            }
             if (i == 0) await Future.delayed(const Duration(milliseconds: 300));
           }
         } finally {
           checkClient?.close();
         }
         if (!connected) {
+          print('[USB] 无法连接到手机服务');
           messageNotifier.value = 'USB: 无法连接到手机服务';
           return false;
         }
-        await fullSync('127.0.0.1', 9091, saveConnection: false);
+        print('[USB] 连接成功，执行全量同步');
+        await fullSync('127.0.0.1', 9091, saveConnection: false)
+            .timeout(const Duration(seconds: 20), onTimeout: () {
+          print('[USB] fullSync 超时');
+          return -1;
+        });
         try {
-          final wifiIp = await _getDeviceWifiIp(devices.first);
+          final wifiIp = await _getDeviceWifiIp(devices.first).timeout(
+            const Duration(seconds: 3),
+            onTimeout: () => null,
+          );
           if (wifiIp != null) {
             await saveLastConnection(wifiIp, 9090);
+            print('[USB] 已保存 WiFi IP: $wifiIp');
           }
         } catch (_) {}
+        print('[USB] 同步成功');
         return true;
       } finally {
+        print('[USB] 清理端口转发');
         await removeAdbForward(localPort: 9091);
       }
     } catch (e) {
+      print('[USB] 同步失败: $e');
       messageNotifier.value = 'USB 同步失败: $e';
       return false;
     } finally {
+      _adbSyncLock = false;
+      _lockAcquiredAt = 0;
+      print('[USB] 释放锁');
       releaseAdbSyncLock();
     }
   }
@@ -394,6 +450,7 @@ class SyncService {
     client.connectionTimeout = const Duration(seconds: 1);
     try {
       final lastSync = await _getLastSyncTime();
+      print('[PULL] 拉取 since=$lastSync');
       final request = await client.postUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/pull'),
       );
@@ -409,12 +466,14 @@ class SyncService {
       final data = jsonDecode(body) as Map<String, dynamic>;
       final merged = await _mergeRemoteData(data);
       await _setLastSyncTime(data['server_time'] as int);
+      print('[PULL] 完成: 合并 $merged 项');
       messageNotifier.value = '拉取完成，合并 $merged 项';
       statusNotifier.value = SyncStatus.idle;
       return data;
     } catch (e) {
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '拉取失败: $e';
+      print('[PULL] 失败: $e');
       rethrow;
     } finally {
       client.close();
@@ -444,15 +503,25 @@ class SyncService {
         [lastSync],
       );
 
+      final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
+      print('[PUSH] 推送 ${nodes.length} 节点 (含 $deletedCount 已删除), ${content.length} 内容, lastSync=$lastSync');
+
       final request = await client.postUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/push'),
       );
       request.headers.contentType = ContentType.json;
-      request.write(jsonEncode({
+      final payload = <String, dynamic>{
         'nodes': nodes,
         'content': content,
         'fts': fts,
-      }));
+      };
+      final pendingDeletes = List<String>.from(_pendingDeleteIds);
+      if (pendingDeletes.isNotEmpty) {
+        payload['deleted_ids'] = pendingDeletes;
+        _pendingDeleteIds.clear();
+        print('[PUSH] 包含 ${pendingDeletes.length} 个永久删除 ID');
+      }
+      request.write(jsonEncode(payload));
       final response = await request.close().timeout(
             const Duration(seconds: 10),
           );
@@ -464,6 +533,7 @@ class SyncService {
       if (data['nodes'] != null) {
         await _mergeRemoteData(data);
       }
+      print('[PUSH] 完成 (${nodes.length} 节点)');
       messageNotifier.value =
           '推送完成 (${nodes.length} 节点)';
       statusNotifier.value = SyncStatus.idle;
@@ -471,6 +541,7 @@ class SyncService {
     } catch (e) {
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '推送失败: $e';
+      print('[PUSH] 失败: $e');
       rethrow;
     } finally {
       client.close();
@@ -480,38 +551,54 @@ class SyncService {
   Future<int> fullSync(String host, int port, {bool saveConnection = true}) async {
     statusNotifier.value = SyncStatus.connecting;
     messageNotifier.value = '正在检查连接...';
+    print('[SYNC] fullSync 开始: $host:$port');
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 1);
     try {
-      final statusReq = await client.getUrl(
-        Uri(scheme: 'http', host: host, port: port, path: '/sync/status'),
-      );
-      final statusRes = await statusReq.close().timeout(
-            const Duration(seconds: 1),
-          );
-      if (statusRes.statusCode != 200) {
-        throw Exception('无法连接到同步服务');
+      try {
+        final statusReq = await client.getUrl(
+          Uri(scheme: 'http', host: host, port: port, path: '/sync/status'),
+        );
+        final statusRes = await statusReq.close().timeout(
+              const Duration(seconds: 1),
+            );
+        if (statusRes.statusCode != 200) {
+          throw Exception('无法连接到同步服务');
+        }
+      } finally {
+        client.close();
       }
+
+      await pushTo(host, port);
+      await pullFrom(host, port);
+      if (saveConnection) {
+        await saveLastConnection(host, port);
+      }
+      statusNotifier.value = SyncStatus.idle;
+      print('[SYNC] fullSync 完成: $host:$port');
+      return 0;
     } catch (e) {
-      client.close();
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '连接失败: $e';
+      print('[SYNC] fullSync 失败: $e');
       rethrow;
     }
-    client.close();
-
-    await pushTo(host, port);
-    await pullFrom(host, port);
-    if (saveConnection) {
-      await saveLastConnection(host, port);
-    }
-    statusNotifier.value = SyncStatus.idle;
-    return 0;
   }
 
   Future<int> _mergeRemoteData(Map<String, dynamic> data) async {
     final db = await DatabaseHelper.instance.database;
     int merged = 0;
+
+    if (data['deleted_ids'] != null && (data['deleted_ids'] as List).isNotEmpty) {
+      final deletedIds = data['deleted_ids'] as List;
+      print('[SERVER] 处理 ${deletedIds.length} 个永久删除');
+      for (final id in deletedIds) {
+        await db.delete('note_content', where: 'note_id = ?', whereArgs: [id]);
+        await db.delete('fts_content', where: 'note_id = ?', whereArgs: [id]);
+        await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
+      }
+      merged += deletedIds.length;
+    }
 
     if (data['nodes'] != null && (data['nodes'] as List).isNotEmpty) {
       final nodes = data['nodes'] as List;
@@ -657,12 +744,22 @@ class SyncService {
       [lastSync],
     );
 
-    _sendJson(request.response, {
+    final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
+    print('[SERVER] 响应拉取 since=$lastSync: ${nodes.length} 节点 (含 $deletedCount 已删除)');
+
+    final pullPayload = <String, dynamic>{
       'nodes': nodes,
       'content': content,
       'fts': fts,
       'server_time': DateTime.now().millisecondsSinceEpoch,
-    });
+    };
+    final pendingDeletes = List<String>.from(_pendingDeleteIds);
+    if (pendingDeletes.isNotEmpty) {
+      pullPayload['deleted_ids'] = pendingDeletes;
+      _pendingDeleteIds.clear();
+      print('[SERVER] 拉取响应包含 ${pendingDeletes.length} 个永久删除 ID');
+    }
+    _sendJson(request.response, pullPayload);
   }
 
   Future<void> _handlePush(HttpRequest request) async {
@@ -670,6 +767,9 @@ class SyncService {
         <int>[], (prev, chunk) => prev..addAll(chunk));
     final body = utf8.decode(bytes);
     final data = jsonDecode(body) as Map<String, dynamic>;
+    final nodes = data['nodes'] as List? ?? [];
+    final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
+    print('[SERVER] 收到推送: ${nodes.length} 节点 (含 $deletedCount 已删除)');
     final merged = await _mergeRemoteData(data);
     if (merged > 0) dataVersionNotifier.value++;
 
@@ -693,13 +793,20 @@ class SyncService {
     // Update last_sync_time so future push responses only send recent changes
     await _setLastSyncTime(DateTime.now().millisecondsSinceEpoch);
 
-    _sendJson(request.response, {
+    final responsePayload = <String, dynamic>{
       'merged': merged,
       'server_time': DateTime.now().millisecondsSinceEpoch,
       'nodes': newNodes,
       'content': newContent,
       'fts': newFts,
-    });
+    };
+    final pendingDeletes = List<String>.from(_pendingDeleteIds);
+    if (pendingDeletes.isNotEmpty) {
+      responsePayload['deleted_ids'] = pendingDeletes;
+      _pendingDeleteIds.clear();
+      print('[SERVER] 响应包含 ${pendingDeletes.length} 个永久删除 ID');
+    }
+    _sendJson(request.response, responsePayload);
   }
 
   void _sendJson(HttpResponse response, Map<String, dynamic> data,
