@@ -19,7 +19,7 @@
 ```
 cd D:\moon_note
 flutter run -d windows          # Windows
-flutter run -d aacd9ae7         # Android (Redmi K80)
+flutter run -d <device-id>    # Android
 ```
 
 ## 技术栈

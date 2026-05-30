@@ -61,6 +61,11 @@ class AboutPage extends StatelessWidget {
             _linkRow(context, cs, 'GitHub', 'https://github.com/qerfsf/moon_note'),
           ]),
           const SizedBox(height: 8),
+          _section(cs, '贡献者', [
+            _contributorRow(cs, 'qerfsf', '设计与开发'),
+            _contributorRow(cs, 'Claude Code', '代码审查与安全审计'),
+          ]),
+          const SizedBox(height: 8),
           _section(cs, '法律', [
             ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16),
@@ -120,6 +125,24 @@ class AboutPage extends StatelessWidget {
               style: TextStyle(fontSize: 15, color: cs.onSurfaceVariant)),
           const Spacer(),
           Text(value, style: TextStyle(fontSize: 15, color: cs.onSurface)),
+        ],
+      ),
+    );
+  }
+
+  Widget _contributorRow(ColorScheme cs, String name, String role) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        children: [
+          Text(name,
+              style: TextStyle(
+                  fontSize: 15,
+                  color: cs.onSurface,
+                  fontWeight: FontWeight.w500)),
+          const SizedBox(width: 8),
+          Text(role,
+              style: TextStyle(fontSize: 13, color: cs.outline)),
         ],
       ),
     );
