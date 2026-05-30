@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:file_picker/file_picker.dart';
 import 'database.dart';
+import 'image_service.dart';
 
 class NotePage extends StatefulWidget {
   final String noteId;
@@ -285,6 +287,20 @@ class _NotePageState extends State<NotePage> {
     );
   }
 
+  PopupMenuItem<String> _popupItem(IconData icon, String label, String value) {
+    return PopupMenuItem<String>(
+      value: value,
+      height: 36,
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: _textTertiary),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(fontSize: 14, color: _textPrimary)),
+        ],
+      ),
+    );
+  }
+
   void _insertMarkdown(String before, String after) {
     _undoStack.add(_contentController.text);
     _redoStack.clear();
@@ -385,6 +401,51 @@ class _NotePageState extends State<NotePage> {
       selection: TextSelection.collapsed(offset: cursorPos),
     );
     _doSave();
+  }
+
+  Future<void> _insertImage() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        withData: false,
+        withReadStream: false,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final filePath = result.files.first.path;
+      if (filePath == null) return;
+
+      final imageId = await ImageService.instance.saveImage(
+        widget.noteId,
+        filePath,
+      );
+
+      final filename = result.files.first.name;
+      _undoStack.add(_contentController.text);
+      _redoStack.clear();
+      final text = _contentController.text;
+      final sel = _contentController.selection;
+      final pos = sel.isValid ? sel.start : text.length;
+      final imgMarkdown = '![$filename](moonimage:$imageId)';
+      final newText =
+          text.replaceRange(pos, sel.isValid ? sel.end : pos, imgMarkdown);
+      final cursorPos = pos + imgMarkdown.length;
+      _contentController.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: cursorPos),
+      );
+      _doSave();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('插入图片失败: $e'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   void _copyLink() {
@@ -688,44 +749,68 @@ class _NotePageState extends State<NotePage> {
                 const SizedBox(height: 4),
                 SizedBox(
                   height: 44,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
+                  child: Row(
                     children: [
-                      _toolbarBtn(Icons.undo, '', '', onTap: _undoStack.length > 1 ? _undo : null),
-                      _toolbarBtn(Icons.redo, '', '', onTap: _redoStack.isNotEmpty ? _redo : null),
-                      const SizedBox(width: 8),
-                      _toolbarBtn(Icons.format_bold, '**', '**'),
-                      _toolbarBtn(Icons.format_italic, '*', '*'),
-                      _toolbarBtn(Icons.strikethrough_s, '~~', '~~'),
-                      const SizedBox(width: 8),
-                      _toolbarBtn(Icons.title, '# ', ''),
-                      _toolbarBtn(Icons.format_size, '## ', ''),
-                      const SizedBox(width: 8),
-                      _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
-                      _toolbarBtn(Icons.checklist, '- [ ] ', ''),
-                      const SizedBox(width: 8),
-                      _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
-                      _toolbarBtn(Icons.search, '', '', onTap: _openFind),
-                      const SizedBox(width: 8),
-                      _toolbarBtn(Icons.text_decrease, '', '',
-                          onTap: _decreaseFont),
-                      _toolbarBtn(Icons.text_increase, '', '',
-                          onTap: _increaseFont),
-                      const SizedBox(width: 8),
-                      _toolbarBtn(
-                        _isPreviewing
-                            ? Icons.edit_outlined
-                            : Icons.visibility_outlined,
-                        '', '',
-                        onTap: () {
-                          if (!_isPreviewing) _doSave();
-                          setState(() => _isPreviewing = !_isPreviewing);
-                          _saveViewMode();
-                        },
+                      Expanded(
+                        child: ListView(
+                          scrollDirection: Axis.horizontal,
+                          children: [
+                            _toolbarBtn(Icons.undo, '', '', onTap: _undoStack.length > 1 ? _undo : null),
+                            _toolbarBtn(Icons.redo, '', '', onTap: _redoStack.isNotEmpty ? _redo : null),
+                            const SizedBox(width: 8),
+                            _toolbarBtn(Icons.format_bold, '**', '**'),
+                            _toolbarBtn(Icons.format_italic, '*', '*'),
+                            const SizedBox(width: 8),
+                            _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
+                            const SizedBox(width: 8),
+                            _toolbarBtn(Icons.image_outlined, '', '', onTap: _insertImage),
+                            _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
+                            const SizedBox(width: 8),
+                            _toolbarBtn(Icons.text_decrease, '', '',
+                                onTap: _decreaseFont),
+                            _toolbarBtn(Icons.text_increase, '', '',
+                                onTap: _increaseFont),
+                            const SizedBox(width: 8),
+                            _toolbarBtn(
+                              _isPreviewing
+                                  ? Icons.edit_outlined
+                                  : Icons.visibility_outlined,
+                              '', '',
+                              onTap: () {
+                                if (!_isPreviewing) _doSave();
+                                setState(() => _isPreviewing = !_isPreviewing);
+                                _saveViewMode();
+                              },
+                            ),
+                          ],
+                        ),
                       ),
-                      if (widget.embedded)
-                        _toolbarBtn(Icons.content_copy, '', '',
-                            onTap: _copyLink),
+                      PopupMenuButton<String>(
+                        icon: Icon(Icons.add_circle_outline, size: 20, color: _textTertiary),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        offset: const Offset(0, 40),
+                        color: Theme.of(context).colorScheme.surface,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        onSelected: (v) {
+                          switch (v) {
+                            case 'h1': _insertMarkdown('# ', ''); break;
+                            case 'h2': _insertMarkdown('## ', ''); break;
+                            case 'strike': _insertMarkdown('~~', '~~'); break;
+                            case 'checklist': _insertMarkdown('- [ ] ', ''); break;
+                            case 'search': _openFind(); break;
+                            case 'copylink': _copyLink(); break;
+                          }
+                        },
+                        itemBuilder: (ctx) => [
+                          _popupItem(Icons.title, '一级标题', 'h1'),
+                          _popupItem(Icons.format_size, '二级标题', 'h2'),
+                          _popupItem(Icons.strikethrough_s, '删除线', 'strike'),
+                          _popupItem(Icons.checklist, '待办清单', 'checklist'),
+                          _popupItem(Icons.search, '查找替换', 'search'),
+                          if (widget.embedded)
+                            _popupItem(Icons.content_copy, '复制链接', 'copylink'),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -816,6 +901,64 @@ class _NotePageState extends State<NotePage> {
                   MarkdownBody(
                     data: content.isEmpty ? '暂无内容' : content,
                     selectable: true,
+                    imageBuilder: (uri, title, alt) {
+                      if (uri.scheme == 'moonimage') {
+                        final imageId = uri.path;
+                        return FutureBuilder<String?>(
+                          future: ImageService.instance.getImagePath(imageId),
+                          builder: (context, snapshot) {
+                            if (snapshot.hasData && snapshot.data != null) {
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.file(
+                                    File(snapshot.data!),
+                                    fit: BoxFit.contain,
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return Container(
+                                        height: 120,
+                                        color: _borderLight.withAlpha(80),
+                                        child: Center(
+                                          child: Icon(Icons.broken_image_outlined,
+                                              size: 32, color: _textTertiary),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              );
+                            }
+                            return Container(
+                              height: 80,
+                              color: _borderLight.withAlpha(60),
+                              child: const Center(
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      }
+                      // Default: try loading as network image
+                      return Image.network(
+                        uri.toString(),
+                        fit: BoxFit.contain,
+                        errorBuilder: (context, error, stackTrace) {
+                          return Container(
+                            height: 80,
+                            color: _borderLight.withAlpha(60),
+                            child: Center(
+                              child: Icon(Icons.broken_image_outlined,
+                                  size: 24, color: _textTertiary),
+                            ),
+                          );
+                        },
+                      );
+                    },
                     onTapLink: (text, href, title) {
                       if (href == null) return;
                       if (href.startsWith('moonnote:')) {

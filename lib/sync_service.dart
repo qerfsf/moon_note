@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'database.dart';
+import 'image_service.dart';
 
 enum SyncStatus { idle, connecting, syncing, error }
 
@@ -523,6 +525,12 @@ class SyncService {
       final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
       print('[PUSH] 推送 ${nodes.length} 节点 (含 $deletedCount 已删除), ${content.length} 内容, lastSync=$lastSync');
 
+      // Include image metadata
+      final images = await ImageService.instance.getImagesModifiedAfter(lastSync);
+      if (images.isNotEmpty) {
+        print('[PUSH] 包含 ${images.length} 张图片元数据');
+      }
+
       final request = await client.postUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/push'),
       );
@@ -531,6 +539,7 @@ class SyncService {
         'nodes': nodes,
         'content': content,
         'fts': fts,
+        'images': images,
         'sync_key': await _getSyncKey(),
       };
       final pendingDeletes = List<String>.from(_pendingDeleteIds);
@@ -594,6 +603,9 @@ class SyncService {
 
       await pushTo(host, port);
       await pullFrom(host, port);
+      // Sync image files after metadata
+      await _downloadMissingImages(host, port);
+      await _uploadMissingImages(host, port);
       if (saveConnection) {
         await saveLastConnection(host, port);
       }
@@ -687,6 +699,16 @@ class SyncService {
       await batch.commit(noResult: true);
     }
 
+    if (data['images'] != null && (data['images'] as List).isNotEmpty) {
+      final imagesList = data['images'] as List;
+      for (final img in imagesList) {
+        await ImageService.instance.upsertImageMeta(
+          Map<String, dynamic>.from(img as Map),
+        );
+      }
+      merged += imagesList.length;
+    }
+
     return merged;
   }
 
@@ -718,6 +740,25 @@ class SyncService {
           await _handlePush(request);
           break;
         default:
+          if (path.startsWith('/sync/image/')) {
+            final imageId = path.substring('/sync/image/'.length);
+            if (imageId.isNotEmpty) {
+              if (request.method == 'GET') {
+                await _handleImageDownload(request, imageId);
+              } else {
+                request.response.statusCode = 405;
+                await request.response.close();
+              }
+            } else {
+              request.response.statusCode = 400;
+              await request.response.close();
+            }
+            break;
+          }
+          if (path == '/sync/image' && request.method == 'POST') {
+            await _handleImageUpload(request);
+            break;
+          }
           request.response.statusCode = 404;
           await request.response.close();
       }
@@ -772,10 +813,14 @@ class SyncService {
 
     final clientKey = req['sync_key'] as String? ?? '';
     final myKey = await _getSyncKey();
+
+    final images = await ImageService.instance.getImagesModifiedAfter(lastSync);
+
     final pullPayload = <String, dynamic>{
       'nodes': nodes,
       'content': content,
       'fts': fts,
+      'images': images,
       'server_time': DateTime.now().millisecondsSinceEpoch,
       'sync_key': myKey,
       'sync_key_mismatch': clientKey.isNotEmpty && myKey.isNotEmpty && clientKey != myKey,
@@ -828,12 +873,15 @@ class SyncService {
     // Update last_sync_time so future push responses only send recent changes
     await _setLastSyncTime(DateTime.now().millisecondsSinceEpoch);
 
+    final newImages = await ImageService.instance.getImagesModifiedAfter(oldLastSync);
+
     final responsePayload = <String, dynamic>{
       'merged': merged,
       'server_time': DateTime.now().millisecondsSinceEpoch,
       'nodes': newNodes,
       'content': newContent,
       'fts': newFts,
+      'images': newImages,
       'sync_key': myKey,
       'sync_key_mismatch': keyMismatch,
     };
@@ -854,5 +902,143 @@ class SyncService {
     response.headers.contentType = ContentType.json;
     response.write(jsonEncode(data));
     response.close();
+  }
+
+  Future<void> _handleImageDownload(HttpRequest request, String imageId) async {
+    try {
+      final bytes = await ImageService.instance.readImageBytes(imageId);
+      if (bytes == null) {
+        request.response.statusCode = 404;
+        await request.response.close();
+        return;
+      }
+      request.response.statusCode = 200;
+      request.response.headers.contentType = ContentType.binary;
+      request.response.add(bytes);
+      await request.response.close();
+    } catch (e) {
+      request.response.statusCode = 500;
+      await request.response.close();
+    }
+  }
+
+  Future<void> _handleImageUpload(HttpRequest request) async {
+    try {
+      final bytes = await request.fold<List<int>>(
+          <int>[], (prev, chunk) => prev..addAll(chunk));
+      final body = utf8.decode(bytes);
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      final imageId = data['id'] as String;
+      final noteId = data['note_id'] as String;
+      final filename = data['filename'] as String;
+      final base64Data = data['data'] as String;
+      final imageBytes = base64Decode(base64Data);
+
+      await ImageService.instance.saveImageBytes(noteId, filename, imageBytes);
+
+      final meta = Map<String, dynamic>.from(data);
+      meta.remove('data');
+      meta['file_size'] = imageBytes.length;
+      await ImageService.instance.upsertImageMeta(meta);
+
+      request.response.statusCode = 200;
+      _sendJson(request.response, {'status': 'ok', 'id': imageId});
+    } catch (e) {
+      request.response.statusCode = 500;
+      await request.response.close();
+    }
+  }
+
+  /// Download missing images from remote after a successful pull.
+  Future<int> _downloadMissingImages(String host, int port) async {
+    final db = await DatabaseHelper.instance.database;
+    final images = await db.query('note_images');
+    int downloaded = 0;
+
+    for (final img in images) {
+      final imageId = img['id'] as String;
+      final localPath = await ImageService.instance.getImagePath(imageId);
+      if (localPath != null) continue; // already have the file
+
+      // Need to download this image
+      final noteId = img['note_id'] as String;
+      final filename = img['filename'] as String;
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 5);
+      try {
+        final req = await client.getUrl(
+          Uri(scheme: 'http', host: host, port: port, path: '/sync/image/$imageId'),
+        );
+        final res = await req.close().timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final bytes = await res.fold<List<int>>(
+              <int>[], (prev, chunk) => prev..addAll(chunk));
+          await ImageService.instance.saveImageBytes(noteId, filename, bytes);
+          downloaded++;
+        }
+      } catch (e) {
+        print('[IMAGE] 下载图片 $imageId 失败: $e');
+      } finally {
+        client.close();
+      }
+    }
+
+    if (downloaded > 0) {
+      print('[IMAGE] 下载了 $downloaded 张缺失的图片');
+    }
+    return downloaded;
+  }
+
+  /// Upload missing images to remote after a successful push.
+  Future<int> _uploadMissingImages(String host, int port) async {
+    final db = await DatabaseHelper.instance.database;
+    final images = await db.query('note_images');
+    int uploaded = 0;
+
+    for (final img in images) {
+      final imageId = img['id'] as String;
+      final bytes = await ImageService.instance.readImageBytes(imageId);
+      if (bytes == null) continue;
+
+      // We don't know if the remote already has this image.
+      // For simplicity, upload all images (under 2MB) every time.
+      // A better approach would track which images have been synced.
+      if (bytes.length > 2 * 1024 * 1024) continue; // skip large images for now
+
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 5);
+      try {
+        final payload = jsonEncode({
+          'id': imageId,
+          'note_id': img['note_id'],
+          'filename': img['filename'],
+          'width': img['width'],
+          'height': img['height'],
+          'file_size': img['file_size'],
+          'created_at': img['created_at'],
+          'modified_at': img['modified_at'],
+          'data': base64Encode(bytes),
+        });
+
+        final req = await client.postUrl(
+          Uri(scheme: 'http', host: host, port: port, path: '/sync/image'),
+        );
+        req.headers.contentType = ContentType.json;
+        req.write(payload);
+        final res = await req.close().timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          uploaded++;
+        }
+      } catch (e) {
+        print('[IMAGE] 上传图片 $imageId 失败: $e');
+      } finally {
+        client.close();
+      }
+    }
+
+    if (uploaded > 0) {
+      print('[IMAGE] 上传了 $uploaded 张图片');
+    }
+    return uploaded;
   }
 }

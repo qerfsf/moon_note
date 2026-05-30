@@ -10,6 +10,7 @@ import 'recycle_bin_page.dart';
 import 'settings_page.dart';
 import 'notification_service.dart';
 import 'sync_service.dart';
+import 'image_service.dart';
 
 class _NoteSearchDelegate extends SearchDelegate<String> {
   final Map<String, List<Map<String, dynamic>>> _cache = {};
@@ -620,6 +621,7 @@ class _HomePageState extends State<HomePage> {
     if (node['type'] == 'note') {
       await db.delete('note_content', where: 'note_id = ?', whereArgs: [id]);
       await db.delete('fts_content', where: 'note_id = ?', whereArgs: [id]);
+      await ImageService.instance.deleteImagesForNote(id);
     }
     await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
   }

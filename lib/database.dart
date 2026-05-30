@@ -30,7 +30,7 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 8, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 9, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
@@ -92,6 +92,19 @@ class DatabaseHelper {
     ''');
 
     await db.execute('''
+      CREATE TABLE note_images (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        width INTEGER,
+        height INTEGER,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        modified_at INTEGER NOT NULL
+      )
+    ''');
+
+    await db.execute('''
       CREATE TABLE app_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -149,6 +162,21 @@ class DatabaseHelper {
         "INSERT OR IGNORE INTO app_settings(key, value) VALUES('device_name', ?)",
         ['Moon'],
       );
+    }
+    if (oldVersion < 9) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS note_images (
+          id TEXT PRIMARY KEY,
+          note_id TEXT NOT NULL,
+          filename TEXT NOT NULL,
+          width INTEGER,
+          height INTEGER,
+          file_size INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          modified_at INTEGER NOT NULL
+        )
+      ''');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_note_images_note ON note_images(note_id)');
     }
   }
 

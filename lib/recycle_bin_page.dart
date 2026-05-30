@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'database.dart';
 import 'sync_service.dart';
+import 'image_service.dart';
 
 class RecycleBinPage extends StatefulWidget {
   const RecycleBinPage({super.key});
@@ -79,6 +80,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
     await db.delete('note_content', where: 'note_id = ?', whereArgs: [id]);
     await db.delete('fts_content', where: 'note_id = ?', whereArgs: [id]);
     await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
+    await ImageService.instance.deleteImagesForNote(id);
     await _loadItems();
     SyncService.instance.dataVersionNotifier.value++;
   }
@@ -137,6 +139,7 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
       await db.delete('fts_content',
           where: 'note_id = ?', whereArgs: [id]);
       await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
+      await ImageService.instance.deleteImagesForNote(id);
     }
     setState(() {
       _selectedIds.clear();
@@ -189,6 +192,14 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
     final ids = allRows.map((r) => r['id'] as String).toList();
     SyncService.instance.addPendingDeletes(ids);
 
+    // Clean up images first
+    final noteRows = await db.query('nodes',
+        columns: ['id', 'type'],
+        where: 'is_deleted = 1 AND type = ?',
+        whereArgs: ['note']);
+    for (final row in noteRows) {
+      await ImageService.instance.deleteImagesForNote(row['id'] as String);
+    }
     // Delete all note_content and fts_content for deleted notes
     await db.rawDelete(
       'DELETE FROM note_content WHERE note_id IN (SELECT id FROM nodes WHERE is_deleted = 1)');
