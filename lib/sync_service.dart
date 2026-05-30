@@ -481,10 +481,6 @@ class SyncService {
       final data = jsonDecode(body) as Map<String, dynamic>;
       final merged = await _mergeRemoteData(data);
       await _setLastSyncTime(data['server_time'] as int);
-      // Download any missing image files from the remote
-      if (data['images'] != null && (data['images'] as List).isNotEmpty) {
-        await _fetchMissingImages(host, port, data['images'] as List);
-      }
       print('[PULL] 完成: 合并 $merged 项');
       if (data['sync_key_mismatch'] == true) {
         messageNotifier.value = '拉取完成，合并 $merged 项（注意: sync_key 不匹配）';
@@ -607,6 +603,16 @@ class SyncService {
 
       await pushTo(host, port);
       await pullFrom(host, port);
+      // Download missing image files — non-critical, catch errors independently
+      try {
+        final db = await DatabaseHelper.instance.database;
+        final allImages = await db.query('note_images');
+        if (allImages.isNotEmpty) {
+          await _fetchMissingImages(host, port, allImages);
+        }
+      } catch (e) {
+        print('[SYNC] 图片下载出错 (不影响笔记同步): $e');
+      }
       if (saveConnection) {
         await saveLastConnection(host, port);
       }
