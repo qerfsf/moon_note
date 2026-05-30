@@ -481,6 +481,10 @@ class SyncService {
       final data = jsonDecode(body) as Map<String, dynamic>;
       final merged = await _mergeRemoteData(data);
       await _setLastSyncTime(data['server_time'] as int);
+      // Download any missing image files from the remote
+      if (data['images'] != null && (data['images'] as List).isNotEmpty) {
+        await _fetchMissingImages(host, port, data['images'] as List);
+      }
       print('[PULL] 完成: 合并 $merged 项');
       if (data['sync_key_mismatch'] == true) {
         messageNotifier.value = '拉取完成，合并 $merged 项（注意: sync_key 不匹配）';
@@ -525,7 +529,7 @@ class SyncService {
       final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
       print('[PUSH] 推送 ${nodes.length} 节点 (含 $deletedCount 已删除), ${content.length} 内容, lastSync=$lastSync');
 
-      // Include image metadata
+      // Include image metadata only — actual files downloaded separately
       final images = await ImageService.instance.getImagesModifiedAfter(lastSync);
       if (images.isNotEmpty) {
         print('[PUSH] 包含 ${images.length} 张图片元数据');
@@ -603,9 +607,6 @@ class SyncService {
 
       await pushTo(host, port);
       await pullFrom(host, port);
-      // Sync image files after metadata
-      await _downloadMissingImages(host, port);
-      await _uploadMissingImages(host, port);
       if (saveConnection) {
         await saveLastConnection(host, port);
       }
@@ -949,96 +950,44 @@ class SyncService {
     }
   }
 
-  /// Download missing images from remote after a successful pull.
-  Future<int> _downloadMissingImages(String host, int port) async {
-    final db = await DatabaseHelper.instance.database;
-    final images = await db.query('note_images');
+  /// Download images listed in the sync payload that are missing locally.
+  Future<int> _fetchMissingImages(String host, int port, List imagesMeta) async {
     int downloaded = 0;
+    for (final img in imagesMeta) {
+      final map = img as Map<String, dynamic>;
+      final imageId = map['id'] as String;
 
-    for (final img in images) {
-      final imageId = img['id'] as String;
+      // Skip if we already have the file
       final localPath = await ImageService.instance.getImagePath(imageId);
-      if (localPath != null) continue; // already have the file
+      if (localPath != null) continue;
 
-      // Need to download this image
-      final noteId = img['note_id'] as String;
-      final filename = img['filename'] as String;
+      final noteId = map['note_id'] as String;
+      final filename = map['filename'] as String;
       final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 5);
+      client.connectionTimeout = const Duration(seconds: 3);
       try {
         final req = await client.getUrl(
           Uri(scheme: 'http', host: host, port: port, path: '/sync/image/$imageId'),
         );
-        final res = await req.close().timeout(const Duration(seconds: 10));
+        final res = await req.close().timeout(const Duration(seconds: 15));
         if (res.statusCode == 200) {
           final bytes = await res.fold<List<int>>(
               <int>[], (prev, chunk) => prev..addAll(chunk));
           await ImageService.instance.saveImageBytes(noteId, filename, bytes);
           downloaded++;
+          print('[IMAGE] 下载成功: $imageId (${bytes.length} bytes)');
+        } else {
+          print('[IMAGE] 下载失败 $imageId: HTTP ${res.statusCode}');
         }
       } catch (e) {
-        print('[IMAGE] 下载图片 $imageId 失败: $e');
+        print('[IMAGE] 下载异常 $imageId: $e');
       } finally {
         client.close();
       }
     }
-
     if (downloaded > 0) {
-      print('[IMAGE] 下载了 $downloaded 张缺失的图片');
+      print('[IMAGE] 本次下载了 $downloaded 张图片');
     }
     return downloaded;
-  }
-
-  /// Upload missing images to remote after a successful push.
-  Future<int> _uploadMissingImages(String host, int port) async {
-    final db = await DatabaseHelper.instance.database;
-    final images = await db.query('note_images');
-    int uploaded = 0;
-
-    for (final img in images) {
-      final imageId = img['id'] as String;
-      final bytes = await ImageService.instance.readImageBytes(imageId);
-      if (bytes == null) continue;
-
-      // We don't know if the remote already has this image.
-      // For simplicity, upload all images (under 2MB) every time.
-      // A better approach would track which images have been synced.
-      if (bytes.length > 2 * 1024 * 1024) continue; // skip large images for now
-
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 5);
-      try {
-        final payload = jsonEncode({
-          'id': imageId,
-          'note_id': img['note_id'],
-          'filename': img['filename'],
-          'width': img['width'],
-          'height': img['height'],
-          'file_size': img['file_size'],
-          'created_at': img['created_at'],
-          'modified_at': img['modified_at'],
-          'data': base64Encode(bytes),
-        });
-
-        final req = await client.postUrl(
-          Uri(scheme: 'http', host: host, port: port, path: '/sync/image'),
-        );
-        req.headers.contentType = ContentType.json;
-        req.write(payload);
-        final res = await req.close().timeout(const Duration(seconds: 10));
-        if (res.statusCode == 200) {
-          uploaded++;
-        }
-      } catch (e) {
-        print('[IMAGE] 上传图片 $imageId 失败: $e');
-      } finally {
-        client.close();
-      }
-    }
-
-    if (uploaded > 0) {
-      print('[IMAGE] 上传了 $uploaded 张图片');
-    }
-    return uploaded;
   }
 }

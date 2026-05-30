@@ -762,18 +762,20 @@ class _NotePageState extends State<NotePage> {
                             _toolbarBtn(Icons.format_italic, '*', '*'),
                             const SizedBox(width: 8),
                             _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
-                            const SizedBox(width: 8),
-                            _toolbarBtn(Icons.image_outlined, '', '', onTap: _insertImage),
                             _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
                             const SizedBox(width: 8),
                             _toolbarBtn(Icons.text_decrease, '', '',
                                 onTap: _decreaseFont),
                             _toolbarBtn(Icons.text_increase, '', '',
                                 onTap: _increaseFont),
-                            const SizedBox(width: 8),
-                            _toolbarBtn(
-                              _isPreviewing
-                                  ? Icons.edit_outlined
+                          ],
+                        ),
+                      ),
+                      // Fixed buttons — always visible
+                      _toolbarBtn(Icons.image_outlined, '', '', onTap: _insertImage),
+                      _toolbarBtn(
+                        _isPreviewing
+                            ? Icons.edit_outlined
                                   : Icons.visibility_outlined,
                               '', '',
                               onTap: () {
@@ -782,9 +784,6 @@ class _NotePageState extends State<NotePage> {
                                 _saveViewMode();
                               },
                             ),
-                          ],
-                        ),
-                      ),
                       PopupMenuButton<String>(
                         icon: Icon(Icons.add_circle_outline, size: 20, color: _textTertiary),
                         padding: const EdgeInsets.symmetric(horizontal: 8),
