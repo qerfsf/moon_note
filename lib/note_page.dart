@@ -41,6 +41,7 @@ class _NotePageState extends State<NotePage> {
   String _loadedContent = '';
   bool _isSaving = false;
   bool _isPreviewing = false;
+  bool _showImages = true;
   final List<String> _undoStack = [];
   final List<String> _redoStack = [];
   Timer? _snapshotDebounce;
@@ -72,6 +73,7 @@ class _NotePageState extends State<NotePage> {
     _loadContent();
     _loadViewMode();
     _loadFontSize();
+    _loadImageSetting();
     if (widget.initialTitle == '未命名') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -102,6 +104,26 @@ class _NotePageState extends State<NotePage> {
     await db.rawInsert(
       'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
       ['last_view_mode', _isPreviewing ? 'preview' : 'edit'],
+    );
+  }
+
+  Future<void> _loadImageSetting() async {
+    final db = await DatabaseHelper.instance.database;
+    final result = await db.query(
+      'app_settings',
+      where: 'key = ?',
+      whereArgs: ['show_images'],
+    );
+    if (result.isNotEmpty) {
+      setState(() => _showImages = result.first['value'] == '1');
+    }
+  }
+
+  Future<void> _saveImageSetting() async {
+    final db = await DatabaseHelper.instance.database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+      ['show_images', _showImages ? '1' : '0'],
     );
   }
 
@@ -713,7 +735,87 @@ class _NotePageState extends State<NotePage> {
     );
   }
 
-  Widget _buildEditor() {
+  Widget _buildToolbar() {
+    return SizedBox(
+      height: 44,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            Expanded(
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  _toolbarBtn(Icons.undo, '', '', onTap: _undoStack.length > 1 ? _undo : null),
+                  _toolbarBtn(Icons.redo, '', '', onTap: _redoStack.isNotEmpty ? _redo : null),
+                  const SizedBox(width: 8),
+                  _toolbarBtn(Icons.format_bold, '**', '**'),
+                  _toolbarBtn(Icons.format_italic, '*', '*'),
+                  const SizedBox(width: 8),
+                  _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
+                  _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
+                  const SizedBox(width: 8),
+                  _toolbarBtn(Icons.text_decrease, '', '',
+                      onTap: _decreaseFont),
+                  _toolbarBtn(Icons.text_increase, '', '',
+                      onTap: _increaseFont),
+                ],
+              ),
+            ),
+            _toolbarBtn(Icons.image_outlined, '', '', onTap: _insertImage),
+            _toolbarBtn(
+              _isPreviewing ? Icons.edit_outlined : Icons.visibility_outlined,
+              '', '',
+              onTap: () {
+                if (!_isPreviewing) _doSave();
+                setState(() => _isPreviewing = !_isPreviewing);
+                _saveViewMode();
+              },
+            ),
+            PopupMenuButton<String>(
+              icon: Icon(Icons.add_circle_outline, size: 20, color: _textTertiary),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              offset: const Offset(0, 40),
+              color: Theme.of(context).colorScheme.surface,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              onSelected: (v) {
+                switch (v) {
+                  case 'h1': _insertMarkdown('# ', ''); break;
+                  case 'h2': _insertMarkdown('## ', ''); break;
+                  case 'strike': _insertMarkdown('~~', '~~'); break;
+                  case 'checklist': _insertMarkdown('- [ ] ', ''); break;
+                  case 'search': _openFind(); break;
+                  case 'copylink': _copyLink(); break;
+                  case 'toggle_images':
+                    setState(() => _showImages = !_showImages);
+                    _saveImageSetting();
+                    _cachedPreview = null;
+                    break;
+                }
+              },
+              itemBuilder: (ctx) => [
+                _popupItem(Icons.title, '一级标题', 'h1'),
+                _popupItem(Icons.format_size, '二级标题', 'h2'),
+                _popupItem(Icons.strikethrough_s, '删除线', 'strike'),
+                _popupItem(Icons.checklist, '待办清单', 'checklist'),
+                _popupItem(Icons.search, '查找替换', 'search'),
+                const PopupMenuDivider(height: 1),
+                _popupItem(
+                  _showImages ? Icons.visibility_off_outlined : Icons.image_outlined,
+                  _showImages ? '隐藏图片' : '显示图片',
+                  'toggle_images',
+                ),
+                if (widget.embedded)
+                  _popupItem(Icons.content_copy, '复制链接', 'copylink'),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEditorBody() {
     return Column(
       children: [
         Expanded(
@@ -746,75 +848,7 @@ class _NotePageState extends State<NotePage> {
                   cursorColor: _textPrimary,
                   onChanged: (_) => _scheduleSave(immediateTitle: true),
                 ),
-                const SizedBox(height: 4),
-                SizedBox(
-                  height: 44,
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: ListView(
-                          scrollDirection: Axis.horizontal,
-                          children: [
-                            _toolbarBtn(Icons.undo, '', '', onTap: _undoStack.length > 1 ? _undo : null),
-                            _toolbarBtn(Icons.redo, '', '', onTap: _redoStack.isNotEmpty ? _redo : null),
-                            const SizedBox(width: 8),
-                            _toolbarBtn(Icons.format_bold, '**', '**'),
-                            _toolbarBtn(Icons.format_italic, '*', '*'),
-                            const SizedBox(width: 8),
-                            _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
-                            _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
-                            const SizedBox(width: 8),
-                            _toolbarBtn(Icons.text_decrease, '', '',
-                                onTap: _decreaseFont),
-                            _toolbarBtn(Icons.text_increase, '', '',
-                                onTap: _increaseFont),
-                          ],
-                        ),
-                      ),
-                      // Fixed buttons — always visible
-                      _toolbarBtn(Icons.image_outlined, '', '', onTap: _insertImage),
-                      _toolbarBtn(
-                        _isPreviewing
-                            ? Icons.edit_outlined
-                                  : Icons.visibility_outlined,
-                              '', '',
-                              onTap: () {
-                                if (!_isPreviewing) _doSave();
-                                setState(() => _isPreviewing = !_isPreviewing);
-                                _saveViewMode();
-                              },
-                            ),
-                      PopupMenuButton<String>(
-                        icon: Icon(Icons.add_circle_outline, size: 20, color: _textTertiary),
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        offset: const Offset(0, 40),
-                        color: Theme.of(context).colorScheme.surface,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        onSelected: (v) {
-                          switch (v) {
-                            case 'h1': _insertMarkdown('# ', ''); break;
-                            case 'h2': _insertMarkdown('## ', ''); break;
-                            case 'strike': _insertMarkdown('~~', '~~'); break;
-                            case 'checklist': _insertMarkdown('- [ ] ', ''); break;
-                            case 'search': _openFind(); break;
-                            case 'copylink': _copyLink(); break;
-                          }
-                        },
-                        itemBuilder: (ctx) => [
-                          _popupItem(Icons.title, '一级标题', 'h1'),
-                          _popupItem(Icons.format_size, '二级标题', 'h2'),
-                          _popupItem(Icons.strikethrough_s, '删除线', 'strike'),
-                          _popupItem(Icons.checklist, '待办清单', 'checklist'),
-                          _popupItem(Icons.search, '查找替换', 'search'),
-                          if (widget.embedded)
-                            _popupItem(Icons.content_copy, '复制链接', 'copylink'),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                Divider(height: 1, thickness: 0.5, color: _borderLight),
-                const SizedBox(height: 6),
+                const SizedBox(height: 12),
                 Expanded(
                   child: TextField(
                     controller: _contentController,
@@ -865,6 +899,11 @@ class _NotePageState extends State<NotePage> {
     );
   }
 
+  Widget _buildEditor() {
+    // Legacy wrapper for compatibility
+    return _buildEditorBody();
+  }
+
   Widget _buildPreview() {
     final content = _contentController.text;
     final chars = content.length;
@@ -903,42 +942,64 @@ class _NotePageState extends State<NotePage> {
                     imageBuilder: (uri, title, alt) {
                       if (uri.scheme == 'moonimage') {
                         final imageId = uri.path;
+                        if (!_showImages) {
+                          // Show compact placeholder instead of full image
+                          return FutureBuilder<String?>(
+                            future: ImageService.instance.getImagePath(imageId),
+                            builder: (context, snapshot) {
+                              final exists = snapshot.hasData && snapshot.data != null;
+                              return Container(
+                                margin: const EdgeInsets.symmetric(vertical: 4),
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: _borderLight),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(exists ? Icons.image_outlined : Icons.broken_image_outlined,
+                                        size: 16, color: _textTertiary),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      (alt != null && alt.isNotEmpty) ? alt : '图片',
+                                      style: TextStyle(fontSize: 13, color: _textTertiary),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          );
+                        }
                         return FutureBuilder<String?>(
                           future: ImageService.instance.getImagePath(imageId),
                           builder: (context, snapshot) {
                             if (snapshot.hasData && snapshot.data != null) {
                               return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                padding: const EdgeInsets.symmetric(vertical: 6),
                                 child: ClipRRect(
                                   borderRadius: BorderRadius.circular(8),
-                                  child: Image.file(
-                                    File(snapshot.data!),
-                                    fit: BoxFit.contain,
-                                    errorBuilder: (context, error, stackTrace) {
-                                      return Container(
-                                        height: 120,
-                                        color: _borderLight.withAlpha(80),
-                                        child: Center(
-                                          child: Icon(Icons.broken_image_outlined,
-                                              size: 32, color: _textTertiary),
-                                        ),
-                                      );
-                                    },
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(maxHeight: 320),
+                                    child: Image.file(
+                                      File(snapshot.data!),
+                                      fit: BoxFit.contain,
+                                      errorBuilder: (context, error, stackTrace) {
+                                        return Container(
+                                          height: 80,
+                                          color: _borderLight.withAlpha(80),
+                                          child: Center(
+                                            child: Icon(Icons.broken_image_outlined,
+                                                size: 24, color: _textTertiary),
+                                          ),
+                                        );
+                                      },
+                                    ),
                                   ),
                                 ),
                               );
                             }
-                            return Container(
-                              height: 80,
-                              color: _borderLight.withAlpha(60),
-                              child: const Center(
-                                child: SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                ),
-                              ),
-                            );
+                            return const SizedBox.shrink();
                           },
                         );
                       }
@@ -948,11 +1009,11 @@ class _NotePageState extends State<NotePage> {
                         fit: BoxFit.contain,
                         errorBuilder: (context, error, stackTrace) {
                           return Container(
-                            height: 80,
+                            height: 60,
                             color: _borderLight.withAlpha(60),
                             child: Center(
                               child: Icon(Icons.broken_image_outlined,
-                                  size: 24, color: _textTertiary),
+                                  size: 20, color: _textTertiary),
                             ),
                           );
                         },
@@ -1057,11 +1118,13 @@ class _NotePageState extends State<NotePage> {
     return Column(
       children: [
         if (_showFind && !_isPreviewing) _buildFindBar(),
+        _buildToolbar(),
+        Divider(height: 0.5, thickness: 0.5, color: _borderLight),
         Expanded(
           child: IndexedStack(
             index: _isPreviewing ? 1 : 0,
             children: [
-              _buildEditor(),
+              _buildEditorBody(),
               _buildPreview(),
             ],
           ),

@@ -562,6 +562,44 @@ class SyncService {
       if (pendingDeletes.isNotEmpty) {
         _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
       }
+      // Upload image files for newly pushed images
+      if (images.isNotEmpty) {
+        int uploaded = 0;
+        for (final img in images) {
+          final imageId = img['id'] as String;
+          final bytes = await ImageService.instance.readImageBytes(imageId);
+          if (bytes == null) continue;
+          try {
+            final upClient = HttpClient();
+            upClient.connectionTimeout = const Duration(seconds: 3);
+            try {
+              final upPayload = jsonEncode({
+                'id': imageId,
+                'note_id': img['note_id'],
+                'filename': img['filename'],
+                'width': img['width'],
+                'height': img['height'],
+                'file_size': img['file_size'],
+                'created_at': img['created_at'],
+                'modified_at': img['modified_at'],
+                'data': base64Encode(bytes),
+              });
+              final upReq = await upClient.postUrl(
+                Uri(scheme: 'http', host: host, port: port, path: '/sync/image'),
+              );
+              upReq.headers.contentType = ContentType.json;
+              upReq.write(upPayload);
+              final upRes = await upReq.close().timeout(const Duration(seconds: 15));
+              if (upRes.statusCode == 200) uploaded++;
+            } finally {
+              upClient.close();
+            }
+          } catch (e) {
+            print('[PUSH] 上传图片 $imageId 失败: $e');
+          }
+        }
+        if (uploaded > 0) print('[PUSH] 上传了 $uploaded 张图片到远端');
+      }
       print('[PUSH] 完成 (${nodes.length} 节点)');
       if (data['sync_key_mismatch'] == true) {
         messageNotifier.value = '推送完成 (${nodes.length} 节点)（注意: sync_key 不匹配）';
