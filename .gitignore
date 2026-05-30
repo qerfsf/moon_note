@@ -39,6 +39,11 @@ app.*.symbols
 # Obfuscation related
 app.*.map.json
 
+# Backup/temp data exports (contain personal note data)
+*_data.json
+*phone_data.json
+*desktop_data.json
+
 # Android Studio will place build artifacts here
 /android/app/debug
 /android/app/profile
