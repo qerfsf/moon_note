@@ -156,7 +156,7 @@ class DatabaseHelper {
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       await DatabaseHelper._migrateFromOldLocations();
     }
-    return await openDatabase(path, version: 9,
+    return await openDatabase(path, version: 10,
         onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
@@ -205,7 +205,20 @@ class DatabaseHelper {
         repeat_type TEXT NOT NULL DEFAULT 'once',
         repeat_day INTEGER,
         is_done INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        modified_at INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE todos (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        is_done INTEGER NOT NULL DEFAULT 0,
+        sort_order REAL NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        modified_at INTEGER NOT NULL
       )
     ''');
 
@@ -305,6 +318,25 @@ class DatabaseHelper {
       ''');
       await db.execute('CREATE INDEX IF NOT EXISTS idx_note_images_note ON note_images(note_id)');
     }
+    if (oldVersion < 10) {
+      // Add modified_at to reminders for sync conflict resolution
+      try {
+        await db.execute('ALTER TABLE reminders ADD COLUMN modified_at INTEGER NOT NULL DEFAULT 0');
+      } catch (_) {}
+      // Create todos table
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS todos (
+          id TEXT PRIMARY KEY,
+          note_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          is_done INTEGER NOT NULL DEFAULT 0,
+          sort_order REAL NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          modified_at INTEGER NOT NULL
+        )
+      ''');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_todos_note ON todos(note_id, is_done)');
+    }
   }
 
   Future _insertSystemFolders(Database db) async {
@@ -357,6 +389,140 @@ class DatabaseHelper {
         'key': entry.key,
         'value': entry.value,
       });
+    }
+  }
+
+  // ── Todo CRUD ──────────────────────────────────────────────
+
+  Future<List<Map<String, dynamic>>> getTodosForNote(String noteId) async {
+    final db = await database;
+    return await db.query(
+      'todos',
+      where: 'note_id = ?',
+      whereArgs: [noteId],
+      orderBy: 'sort_order ASC',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getAllTodos({bool? isDone}) async {
+    final db = await database;
+    if (isDone == null) {
+      return await db.query('todos', orderBy: 'modified_at DESC');
+    }
+    return await db.query(
+      'todos',
+      where: 'is_done = ?',
+      whereArgs: [isDone ? 1 : 0],
+      orderBy: 'sort_order ASC',
+    );
+  }
+
+  Future<void> upsertTodo(Map<String, dynamic> todo) async {
+    final db = await database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO todos(id, note_id, title, is_done, sort_order, created_at, modified_at) VALUES(?, ?, ?, ?, ?, ?, ?)',
+      [
+        todo['id'],
+        todo['note_id'],
+        todo['title'],
+        todo['is_done'] ?? 0,
+        todo['sort_order'] ?? 0,
+        todo['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+        todo['modified_at'] ?? DateTime.now().millisecondsSinceEpoch,
+      ],
+    );
+  }
+
+  Future<bool> toggleTodo(String id) async {
+    final db = await database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // Get the todo to find its current state and note
+    final todos = await db.query('todos', where: 'id = ?', whereArgs: [id]);
+    if (todos.isEmpty) return false;
+    final todo = todos.first;
+    final noteId = todo['note_id'] as String;
+    final title = todo['title'] as String;
+    final currentDone = (todo['is_done'] as int) == 1;
+
+    // Toggle in todos table
+    await db.rawUpdate(
+      'UPDATE todos SET is_done = 1 - is_done, modified_at = ? WHERE id = ?',
+      [now, id],
+    );
+
+    // Also toggle in note_content markdown
+    final contentRows = await db.query('note_content',
+        where: 'note_id = ?', whereArgs: [noteId]);
+    if (contentRows.isNotEmpty) {
+      final content = contentRows.first['content'] as String;
+      final source = currentDone ? '- [x] $title' : '- [ ] $title';
+      final target = currentDone ? '- [ ] $title' : '- [x] $title';
+      if (content.contains(source)) {
+        final newContent = content.replaceFirst(source, target);
+        await db.update(
+          'note_content',
+          {'content': newContent, 'modified_at': now},
+          where: 'note_id = ?',
+          whereArgs: [noteId],
+        );
+        // Also update fts_content
+        final nodeRows = await db.query('nodes',
+            where: 'id = ?', whereArgs: [noteId]);
+        final nodeTitle =
+            nodeRows.isNotEmpty ? nodeRows.first['title'] as String : '';
+        await db.rawInsert(
+          'INSERT OR REPLACE INTO fts_content(note_id, title, content) VALUES(?, ?, ?)',
+          [noteId, nodeTitle, newContent],
+        );
+        // Update node modified_at for sync
+        await db.update(
+          'nodes',
+          {'modified_at': now, 'content_modified_at': now},
+          where: 'id = ?',
+          whereArgs: [noteId],
+        );
+      }
+    }
+    return true;
+  }
+
+  Future<void> deleteTodo(String id) async {
+    final db = await database;
+    await db.delete('todos', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> syncTodosFromMarkdown(String noteId, String content) async {
+    final db = await database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // Parse markdown task list items: lines matching "- [ ] ..." or "- [x] ..."
+    final taskRegex = RegExp(r'^[-*]\s*\[( |x|X)\]\s+(.+)$', multiLine: true);
+    final matches = taskRegex.allMatches(content);
+
+    final existingTodos = await getTodosForNote(noteId);
+    final existingTitles = existingTodos.map((t) => t['title'] as String).toSet();
+
+    int sort = 0;
+    for (final m in matches) {
+      final title = m.group(2)!.trim();
+      if (title.isEmpty) continue;
+      final isDone = m.group(1) != ' '; // 'x' or 'X' means done
+      final todoId = '${noteId}_todo_${title.hashCode}';
+
+      await db.rawInsert(
+        'INSERT OR REPLACE INTO todos(id, note_id, title, is_done, sort_order, created_at, modified_at) VALUES(?, ?, ?, ?, ?, ?, ?)',
+        [todoId, noteId, title, isDone ? 1 : 0, sort.toDouble(), now, now],
+      );
+      sort++;
+    }
+
+    // Remove todos that no longer exist in the markdown (only those newly created from markdown)
+    final newTitles = matches.map((m) => m.group(2)!.trim()).toSet();
+    for (final existing in existingTodos) {
+      if (!newTitles.contains(existing['title'])) {
+        await db.delete('todos', where: 'id = ?', whereArgs: [existing['id']]);
+      }
     }
   }
 }

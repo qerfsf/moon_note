@@ -108,6 +108,7 @@ void main() async {
   await NotificationService.instance.init();
   await NotificationService.instance.requestPermission();
   await NotificationService.instance.showPersistent();
+  await NotificationService.instance.initReminderChannel();
   try {
     await SyncService.instance.startServer();
   } catch (_) {}

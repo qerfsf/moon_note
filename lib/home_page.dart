@@ -8,6 +8,7 @@ import 'database.dart';
 import 'note_page.dart';
 import 'recycle_bin_page.dart';
 import 'settings_page.dart';
+import 'todo_page.dart';
 import 'notification_service.dart';
 import 'sync_service.dart';
 import 'image_service.dart';
@@ -225,6 +226,8 @@ class _HomePageState extends State<HomePage> {
     NotificationService.instance.drainPendingQuickNote();
     if (!_isDesktop) _checkBatteryOptimization();
     _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) => _trySync(showToast: false));
+    _reminderTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkReminders());
+    NotificationService.instance.onReminderFired = _onReminderFired;
     SyncService.instance.dataVersionNotifier.addListener(_onRemoteDataChanged);
   }
 
@@ -234,6 +237,7 @@ class _HomePageState extends State<HomePage> {
     _titleEditController.dispose();
     _syncTimer?.cancel();
     _quickSyncTimer?.cancel();
+    _reminderTimer?.cancel();
     SyncService.instance.dataVersionNotifier.removeListener(_onRemoteDataChanged);
     super.dispose();
   }
@@ -320,8 +324,133 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _checkReminders() async {
+    try {
+      final db = await DatabaseHelper.instance.database;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final due = await db.query(
+        'reminders',
+        where: 'is_done = 0 AND remind_at <= ?',
+        whereArgs: [now],
+      );
+      for (final r in due) {
+        final remId = r['id'] as String;
+        if (_firedReminderIds.contains(remId)) continue;
+        _firedReminderIds.add(remId);
+
+        final noteId = r['note_id'] as String;
+        final nodes = await db.query('nodes',
+            where: 'id = ?', whereArgs: [noteId]);
+        final title = nodes.isNotEmpty ? nodes.first['title'] as String : '';
+
+        // Mark as done for non-repeating reminders
+        final repeatType = r['repeat_type'] as String? ?? 'once';
+        if (repeatType == 'once') {
+          await db.update(
+            'reminders',
+            {'is_done': 1, 'modified_at': now},
+            where: 'id = ?',
+            whereArgs: [remId],
+          );
+        } else {
+          // Advance remind_at for repeating reminders
+          final oldAt =
+              DateTime.fromMillisecondsSinceEpoch(r['remind_at'] as int);
+          DateTime newAt = oldAt;
+          switch (repeatType) {
+            case 'daily':
+              newAt = oldAt.add(const Duration(days: 1));
+              break;
+            case 'weekly':
+              newAt = oldAt.add(const Duration(days: 7));
+              break;
+            case 'monthly':
+              newAt = DateTime(oldAt.year, oldAt.month + 1, oldAt.day,
+                  oldAt.hour, oldAt.minute);
+              break;
+            case 'yearly':
+              newAt = DateTime(oldAt.year + 1, oldAt.month, oldAt.day,
+                  oldAt.hour, oldAt.minute);
+              break;
+          }
+          await db.update(
+            'reminders',
+            {
+              'remind_at': newAt.millisecondsSinceEpoch,
+              'modified_at': now,
+            },
+            where: 'id = ?',
+            whereArgs: [remId],
+          );
+        }
+
+        await NotificationService.instance.showReminderNotification(
+          id: remId.hashCode.abs() % 900 + 100,
+          noteTitle: title,
+          body: '⏰ 您设定的提醒时间到了',
+          noteId: noteId,
+        );
+      }
+      if (due.isNotEmpty) {
+        await _loadNodes();
+        _scheduleQuickSync();
+      }
+    } catch (e) {
+      print('提醒检查错误: $e');
+    }
+  }
+
+  void _onReminderFired(String title, String body, String? noteId) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title.isNotEmpty ? title : '提醒',
+            style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                color: _textPrimary)),
+        content: Text(body,
+            style: TextStyle(fontSize: 15, color: _textSecondary)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('关闭',
+                style: TextStyle(color: _textTertiary, fontSize: 14)),
+          ),
+          if (noteId != null)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                if (_isDesktop) {
+                  setState(() {
+                    _selectedNoteId = noteId;
+                    _selectedNoteTitle = title;
+                  });
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => NotePage(
+                        noteId: noteId,
+                        initialTitle: title,
+                      ),
+                    ),
+                  );
+                }
+              },
+              child: Text('查看',
+                  style: TextStyle(color: _textPrimary, fontSize: 14)),
+            ),
+        ],
+      ),
+    );
+  }
+
   bool _isSyncing = false;
   Timer? _syncTimer;
+  Timer? _reminderTimer;
+  final Set<String> _firedReminderIds = {};
 
   void _onRemoteDataChanged() => _loadNodes();
 
@@ -1048,15 +1177,17 @@ class _HomePageState extends State<HomePage> {
         whereArgs: [nodeId],
       );
     } else {
+      final now = DateTime.now().millisecondsSinceEpoch;
       await db.rawInsert(
-        'INSERT OR REPLACE INTO reminders(id, note_id, remind_at, repeat_type, repeat_day, is_done, created_at) VALUES(?, ?, ?, ?, ?, 0, ?)',
+        'INSERT OR REPLACE INTO reminders(id, note_id, remind_at, repeat_type, repeat_day, is_done, created_at, modified_at) VALUES(?, ?, ?, ?, ?, 0, ?, ?)',
         [
-          existing.isNotEmpty ? existing.first['id'] as String : DateTime.now().millisecondsSinceEpoch.toString(),
+          existing.isNotEmpty ? existing.first['id'] as String : now.toString(),
           nodeId,
           result['remind_at'],
           result['repeat_type'],
           result['repeat_day'] ?? 0,
-          DateTime.now().millisecondsSinceEpoch,
+          existing.isNotEmpty ? existing.first['created_at'] as int? ?? now : now,
+          now,
         ],
       );
     }
@@ -1872,6 +2003,31 @@ class _HomePageState extends State<HomePage> {
                       ),
                       if (_currentFolderId == null)
                         IconButton(
+                          icon: Icon(Icons.checklist_outlined,
+                              size: 20,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant),
+                          tooltip: '待办',
+                          onPressed: () async {
+                            if (_isDesktop) {
+                              setState(() {
+                                _selectedNoteId = null;
+                                _selectedNoteTitle = '';
+                              });
+                              // Show todo page in right panel
+                            }
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      const TodoPage()),
+                            );
+                            _loadNodes();
+                          },
+                        ),
+                      if (_currentFolderId == null)
+                        IconButton(
                           icon: Icon(Icons.delete_outline,
                               size: 20,
                               color: Theme.of(context)
@@ -2261,6 +2417,21 @@ class _HomePageState extends State<HomePage> {
                           MaterialPageRoute(
                               builder: (context) =>
                                   const SettingsPage()),
+                        );
+                        _loadNodes();
+                      },
+                    ),
+                  if (_currentFolderId == null)
+                    IconButton(
+                      icon: Icon(Icons.checklist_outlined,
+                          size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      tooltip: '待办',
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  const TodoPage()),
                         );
                         _loadNodes();
                       },

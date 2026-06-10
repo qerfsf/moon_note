@@ -129,4 +129,59 @@ class NotificationService {
     await _plugin.cancel(id: _notifyId);
     await stopForeground();
   }
+
+  // ── Reminder notifications ─────────────────────────────────
+
+  static const _reminderChannelId = 'moon_note_reminders';
+  static const _reminderChannelName = '笔记提醒';
+
+  Future<void> initReminderChannel() async {
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    if (isDesktop) return;
+    const androidChannel = AndroidNotificationChannel(
+      _reminderChannelId,
+      _reminderChannelName,
+      importance: Importance.high,
+      playSound: true,
+      enableVibration: true,
+    );
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(androidChannel);
+  }
+
+  Future<void> showReminderNotification({
+    required int id,
+    required String noteTitle,
+    required String body,
+    String? noteId,
+  }) async {
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    if (isDesktop) {
+      // On desktop, fire in-app callback; home_page shows a dialog
+      onReminderFired?.call(noteTitle, body, noteId);
+      return;
+    }
+    final androidDetails = AndroidNotificationDetails(
+      _reminderChannelId,
+      _reminderChannelName,
+      importance: Importance.high,
+      priority: Priority.high,
+      playSound: true,
+      enableVibration: true,
+    );
+    await _plugin.show(
+      id: id,
+      title: noteTitle.isNotEmpty ? noteTitle : '提醒',
+      body: body,
+      notificationDetails:
+          NotificationDetails(android: androidDetails),
+      payload: noteId,
+    );
+  }
+
+  void Function(String title, String body, String? noteId)? onReminderFired;
 }

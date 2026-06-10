@@ -522,6 +522,18 @@ class SyncService {
         [lastSync],
       );
 
+      // Sync reminders and todos
+      final reminders = await db.query(
+        'reminders',
+        where: 'modified_at > ?',
+        whereArgs: [lastSync],
+      );
+      final todos = await db.query(
+        'todos',
+        where: 'modified_at > ?',
+        whereArgs: [lastSync],
+      );
+
       final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
       print('[PUSH] 推送 ${nodes.length} 节点 (含 $deletedCount 已删除), ${content.length} 内容, lastSync=$lastSync');
 
@@ -540,6 +552,8 @@ class SyncService {
         'content': content,
         'fts': fts,
         'images': images,
+        'reminders': reminders,
+        'todos': todos,
         'sync_key': await _getSyncKey(),
       };
       final pendingDeletes = List<String>.from(_pendingDeleteIds);
@@ -754,6 +768,58 @@ class SyncService {
       merged += imagesList.length;
     }
 
+    if (data['reminders'] != null && (data['reminders'] as List).isNotEmpty) {
+      final remindersList = data['reminders'] as List;
+      final remIds = remindersList.map((r) => r['id'] as String).toList();
+      final placeholders = remIds.map((_) => '?').join(',');
+      final existingRows = await db.rawQuery(
+        'SELECT id, modified_at FROM reminders WHERE id IN ($placeholders)',
+        remIds,
+      );
+      final existingMap = {for (final r in existingRows) r['id'] as String: r['modified_at'] as int};
+
+      final batch = db.batch();
+      for (final r in remindersList) {
+        final id = r['id'] as String;
+        final remoteModified = r['modified_at'] as int? ?? 0;
+        final localModified = existingMap[id];
+        if (localModified == null) {
+          batch.insert('reminders', _toDbMap(r));
+          merged++;
+        } else if (remoteModified > localModified) {
+          batch.update('reminders', _toDbMap(r), where: 'id = ?', whereArgs: [id]);
+          merged++;
+        }
+      }
+      await batch.commit(noResult: true);
+    }
+
+    if (data['todos'] != null && (data['todos'] as List).isNotEmpty) {
+      final todosList = data['todos'] as List;
+      final todoIds = todosList.map((t) => t['id'] as String).toList();
+      final placeholders = todoIds.map((_) => '?').join(',');
+      final existingRows = await db.rawQuery(
+        'SELECT id, modified_at FROM todos WHERE id IN ($placeholders)',
+        todoIds,
+      );
+      final existingMap = {for (final r in existingRows) r['id'] as String: r['modified_at'] as int};
+
+      final batch = db.batch();
+      for (final t in todosList) {
+        final id = t['id'] as String;
+        final remoteModified = t['modified_at'] as int? ?? 0;
+        final localModified = existingMap[id];
+        if (localModified == null) {
+          batch.insert('todos', _toDbMap(t));
+          merged++;
+        } else if (remoteModified > localModified) {
+          batch.update('todos', _toDbMap(t), where: 'id = ?', whereArgs: [id]);
+          merged++;
+        }
+      }
+      await batch.commit(noResult: true);
+    }
+
     return merged;
   }
 
@@ -852,6 +918,16 @@ class SyncService {
       'SELECT fc.* FROM fts_content fc INNER JOIN nodes n ON n.id = fc.note_id WHERE n.modified_at > ?',
       [lastSync],
     );
+    final reminders = await db.query(
+      'reminders',
+      where: 'modified_at > ?',
+      whereArgs: [lastSync],
+    );
+    final todos = await db.query(
+      'todos',
+      where: 'modified_at > ?',
+      whereArgs: [lastSync],
+    );
 
     final deletedCount = nodes.where((n) => n['is_deleted'] == 1).length;
     print('[SERVER] 响应拉取 since=$lastSync: ${nodes.length} 节点 (含 $deletedCount 已删除)');
@@ -866,6 +942,8 @@ class SyncService {
       'content': content,
       'fts': fts,
       'images': images,
+      'reminders': reminders,
+      'todos': todos,
       'server_time': DateTime.now().millisecondsSinceEpoch,
       'sync_key': myKey,
       'sync_key_mismatch': clientKey.isNotEmpty && myKey.isNotEmpty && clientKey != myKey,
@@ -914,6 +992,16 @@ class SyncService {
       'SELECT fc.* FROM fts_content fc INNER JOIN nodes n ON n.id = fc.note_id WHERE n.modified_at > ?',
       [oldLastSync],
     );
+    final newReminders = await db.query(
+      'reminders',
+      where: 'modified_at > ?',
+      whereArgs: [oldLastSync],
+    );
+    final newTodos = await db.query(
+      'todos',
+      where: 'modified_at > ?',
+      whereArgs: [oldLastSync],
+    );
 
     // Update last_sync_time so future push responses only send recent changes
     await _setLastSyncTime(DateTime.now().millisecondsSinceEpoch);
@@ -927,6 +1015,8 @@ class SyncService {
       'content': newContent,
       'fts': newFts,
       'images': newImages,
+      'reminders': newReminders,
+      'todos': newTodos,
       'sync_key': myKey,
       'sync_key_mismatch': keyMismatch,
     };

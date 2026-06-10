@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:file_picker/file_picker.dart';
 import 'database.dart';
 import 'image_service.dart';
@@ -42,6 +43,7 @@ class _NotePageState extends State<NotePage> {
   bool _isSaving = false;
   bool _isPreviewing = false;
   bool _showImages = true;
+  int _previewTodoNdx = 0;
   final List<String> _undoStack = [];
   final List<String> _redoStack = [];
   Timer? _snapshotDebounce;
@@ -57,6 +59,8 @@ class _NotePageState extends State<NotePage> {
   final TextEditingController _findController = TextEditingController();
   final TextEditingController _replaceController = TextEditingController();
   final FocusNode _findFocusNode = FocusNode();
+
+  // Todo state — parsed from content on save via syncTodosFromMarkdown
   List<int> _matchPositions = [];
   int _currentMatchIndex = -1;
 
@@ -288,8 +292,28 @@ class _NotePageState extends State<NotePage> {
       'INSERT OR REPLACE INTO fts_content(note_id, title, content) VALUES(?, ?, ?)',
       [widget.noteId, title, _contentController.text],
     );
+    if (contentChanged) {
+      await DatabaseHelper.instance.syncTodosFromMarkdown(
+          widget.noteId, _contentController.text);
+    }
     widget.onTitleChanged?.call(title);
     _isSaving = false;
+  }
+
+  void _toggleTodoFromPreviewSimple(int start, int end, bool currentChecked) {
+    final content = _contentController.text;
+    final matched = content.substring(start, end);
+    final toggled = currentChecked
+        ? matched.replaceFirst(RegExp(r'\[[xX]\]'), '[ ] ')
+        : matched.replaceFirst(RegExp(r'\[\s\]'), '[x]');
+
+    final newContent =
+        '${content.substring(0, start)}$toggled${content.substring(end)}';
+
+    _contentController.text = newContent;
+    _loadedContent = newContent;
+    _onContentChanged();
+    _doSave();
   }
 
   Widget _toolbarBtn(IconData icon, String before, String after, {VoidCallback? onTap}) {
@@ -915,9 +939,19 @@ class _NotePageState extends State<NotePage> {
     }
     _lastPreviewHash = hash;
     _lastPreviewFontSize = _fontSize;
+
+    // Parse todo items manually (more reliable than MarkdownBody checkboxBuilder)
+    final taskRegex = RegExp(r'^[-*]\s*\[([ xX])\]\s+(.+)$', multiLine: true);
+    final taskMatches = taskRegex.allMatches(content).toList();
+    final hasTodos = taskMatches.isNotEmpty;
+
+    // Build clean content with todo lines replaced (keep structure)
+    final cleanContent = content.replaceAll(taskRegex, '');
+
+    final cs = Theme.of(context).colorScheme;
     _cachedPreview = Column(
       children: [
-        // Exit preview bar — especially important on desktop (embedded mode has no AppBar)
+        // Exit preview bar
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
@@ -930,7 +964,7 @@ class _NotePageState extends State<NotePage> {
               Icon(Icons.visibility_outlined, size: 16, color: _textTertiary),
               const SizedBox(width: 8),
               Text(
-                '预览模式',
+                hasTodos ? '预览模式 | ${taskMatches.length} 待办' : '预览模式',
                 style: TextStyle(fontSize: 13, color: _textTertiary),
               ),
               const Spacer(),
@@ -974,10 +1008,68 @@ class _NotePageState extends State<NotePage> {
                       height: 1.3,
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  // ── Custom todo checkboxes ──
+                  if (hasTodos) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: _borderLight),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        children: List.generate(taskMatches.length, (i) {
+                          final m = taskMatches[i];
+                          final checked = m.group(1) != ' ';
+                          final title = m.group(2)!.trim();
+                          return Container(
+                            decoration: BoxDecoration(
+                              border: i < taskMatches.length - 1
+                                  ? Border(bottom: BorderSide(
+                                      color: _borderLight, width: 0.5))
+                                  : null,
+                            ),
+                            child: ListTile(
+                              dense: true,
+                              leading: GestureDetector(
+                                onTap: () =>
+                                    _toggleTodoFromPreviewSimple(
+                                        m.start, m.end, checked),
+                                child: Icon(
+                                  checked
+                                      ? Icons.check_box
+                                      : Icons.check_box_outline_blank,
+                                  size: 20,
+                                  color: checked
+                                      ? cs.onSurface
+                                      : cs.outline,
+                                ),
+                              ),
+                              title: Text(
+                                title,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: checked
+                                      ? _textTertiary
+                                      : _textPrimary,
+                                  decoration: checked
+                                      ? TextDecoration.lineThrough
+                                      : null,
+                                ),
+                              ),
+                              contentPadding:
+                                  const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 0),
+                            ),
+                          );
+                        }),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   MarkdownBody(
-                    data: content.isEmpty ? '暂无内容' : content,
+                    data: cleanContent.isEmpty ? '暂无内容' : cleanContent,
                     selectable: true,
+                    softLineBreak: true,
                     imageBuilder: (uri, title, alt) {
                       if (uri.scheme == 'moonimage') {
                         final imageId = uri.path;
