@@ -917,6 +917,45 @@ class _NotePageState extends State<NotePage> {
     _lastPreviewFontSize = _fontSize;
     _cachedPreview = Column(
       children: [
+        // Exit preview bar — especially important on desktop (embedded mode has no AppBar)
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: _borderLight, width: 0.5),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.visibility_outlined, size: 16, color: _textTertiary),
+              const SizedBox(width: 8),
+              Text(
+                '预览模式',
+                style: TextStyle(fontSize: 13, color: _textTertiary),
+              ),
+              const Spacer(),
+              SizedBox(
+                height: 30,
+                child: TextButton.icon(
+                  onPressed: () {
+                    setState(() => _isPreviewing = false);
+                    _saveViewMode();
+                  },
+                  icon: Icon(Icons.edit_outlined, size: 16),
+                  label: Text('编辑', style: TextStyle(fontSize: 13)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    foregroundColor: _textPrimary,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                      side: BorderSide(color: _borderLight),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),

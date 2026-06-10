@@ -562,8 +562,10 @@ class _HomePageState extends State<HomePage> {
         'is_system': 0,
         'created_at': now,
         'modified_at': now,
+        'content_modified_at': now,
       });
       await _loadNodes();
+      _scheduleQuickSync();
     } catch (e) {
       print('创建文件夹错误: $e');
     }
@@ -1509,8 +1511,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _openFileLocation() async {
     if (!Platform.isWindows) return;
     try {
-      final dbPath = await getDatabasesPath();
-      final fullPath = '$dbPath${Platform.pathSeparator}moon_note.db';
+      final fullPath = await DatabaseHelper.resolvedDatabasePath;
       await Process.run('explorer', ['/select,', fullPath]);
     } catch (_) {}
   }

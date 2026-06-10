@@ -1,5 +1,7 @@
+import 'dart:io';
 import 'dart:math';
 
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -27,10 +29,135 @@ class DatabaseHelper {
     return _database!;
   }
 
+  static String? _resolvedDbPath;
+
+  /// Returns the absolute database file path.
+  /// On desktop, uses a fixed location under Documents\MoonNote\
+  /// to avoid CWD-dependent behaviour (flutter run vs release exe).
+  /// On mobile, falls back to the standard getDatabasesPath().
+  static Future<String> get resolvedDatabasePath async {
+    if (_resolvedDbPath != null) return _resolvedDbPath!;
+
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      final docDir = await getApplicationDocumentsDirectory();
+      final moonDir = Directory(
+        '${docDir.path}${Platform.pathSeparator}MoonNote',
+      );
+      if (!await moonDir.exists()) {
+        await moonDir.create(recursive: true);
+      }
+      _resolvedDbPath = '${moonDir.path}${Platform.pathSeparator}moon_note.db';
+    } else {
+      final dbPath = await getDatabasesPath();
+      _resolvedDbPath = join(dbPath, 'moon_note.db');
+    }
+
+    return _resolvedDbPath!;
+  }
+
+  /// Discover old database files from previous working-directory-relative
+  /// locations.  Returns a de-duplicated list of existing files.
+  static Future<List<File>> _findOldDatabases() async {
+    final oldFiles = <File>[];
+
+    // (a) The current sqflite_common_ffi default (CWD-relative)
+    final oldDbPath = await getDatabasesPath();
+    final oldDefault = File(join(oldDbPath, 'moon_note.db'));
+    if (await oldDefault.exists()) {
+      oldFiles.add(oldDefault);
+    }
+
+    // (b) Walk up from the executable directory, looking for the
+    //     .dart_tool/sqflite_common_ffi/databases/ pattern.
+    //     This catches both "flutter run" (project root) and
+    //     double-click-launched builds (deep inside build/).
+    try {
+      final exeDir = Directory(Platform.resolvedExecutable).parent;
+      var current = exeDir;
+      for (int i = 0; i < 8; i++) {
+        final candidate = File(join(
+          current.path,
+          '.dart_tool', 'sqflite_common_ffi', 'databases', 'moon_note.db',
+        ));
+        if (await candidate.exists()) {
+          if (!oldFiles.any((f) => f.path == candidate.path)) {
+            oldFiles.add(candidate);
+          }
+        }
+        final parent = current.parent;
+        if (parent.path == current.path) break; // reached filesystem root
+        current = parent;
+      }
+    } catch (_) {}
+
+    return oldFiles;
+  }
+
+  /// Migrate the largest old database to the new fixed-path location.
+  /// Does nothing if the new location already contains a valid database.
+  static Future<void> _migrateFromOldLocations() async {
+    final newPath = await resolvedDatabasePath;
+    final newFile = File(newPath);
+
+    // Guard: if new DB already has the 'nodes' table, skip migration.
+    if (await newFile.exists()) {
+      try {
+        final db = await openDatabase(newPath, readOnly: true);
+        final result = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'",
+        );
+        await db.close();
+        if (result.isNotEmpty) return;
+      } catch (_) {
+        // File exists but is not a valid SQLite DB — allow overwrite.
+      }
+    }
+
+    final oldFiles = await _findOldDatabases();
+    if (oldFiles.isEmpty) return;
+
+    // Pick the database with the largest file size (most data).
+    File? bestOld;
+    int bestSize = 0;
+    for (final f in oldFiles) {
+      try {
+        final size = await f.length();
+        if (size > bestSize) {
+          bestSize = size;
+          bestOld = f;
+        }
+      } catch (_) {}
+    }
+
+    if (bestOld == null) return;
+
+    // Ensure target parent directory exists.
+    final targetDir = newFile.parent;
+    if (!await targetDir.exists()) {
+      await targetDir.create(recursive: true);
+    }
+
+    // Copy the database file.
+    await bestOld.copy(newPath);
+
+    // Also copy SQLite journal / WAL sidecar files if present.
+    for (final suffix in ['-wal', '-shm', '-journal']) {
+      final oldJournal = File('${bestOld.path}$suffix');
+      if (await oldJournal.exists()) {
+        try {
+          await oldJournal.copy('$newPath$suffix');
+        } catch (_) {}
+      }
+    }
+  }
+
   Future<Database> _initDB(String filePath) async {
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 9, onCreate: _createDB, onUpgrade: _upgradeDB);
+    final path = await DatabaseHelper.resolvedDatabasePath;
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      await DatabaseHelper._migrateFromOldLocations();
+    }
+    return await openDatabase(path, version: 9,
+        onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
