@@ -13,7 +13,6 @@ class BackupService {
   static const _tables = [
     'nodes',
     'note_content',
-    'fts_content',
     'reminders',
     'note_links',
     'app_settings',
@@ -68,7 +67,6 @@ class BackupService {
       // Clear existing data in reverse dependency order
       await txn.delete('note_links');
       await txn.delete('reminders');
-      await txn.delete('fts_content');
       await txn.delete('note_content');
       await txn.delete('nodes');
       await txn.delete('app_settings');

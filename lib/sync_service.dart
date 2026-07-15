@@ -517,11 +517,6 @@ class SyncService {
         'SELECT nc.* FROM note_content nc INNER JOIN nodes n ON n.id = nc.note_id WHERE n.modified_at > ?',
         [lastSync],
       );
-      final fts = await db.rawQuery(
-        'SELECT fc.* FROM fts_content fc INNER JOIN nodes n ON n.id = fc.note_id WHERE n.modified_at > ?',
-        [lastSync],
-      );
-
       // Sync reminders and todos
       final reminders = await db.query(
         'reminders',
@@ -550,7 +545,6 @@ class SyncService {
       final payload = <String, dynamic>{
         'nodes': nodes,
         'content': content,
-        'fts': fts,
         'images': images,
         'reminders': reminders,
         'todos': todos,
@@ -656,30 +650,17 @@ class SyncService {
         client.close();
       }
 
-      // Multi-round sync: 2 rounds of push+pull to catch in-flight changes
-      // Round 1: push local → pull remote
-      // Round 2: verify — push any changes that happened during round 1, then pull again
-      int totalMerged = 0;
-      for (int round = 1; round <= 2; round++) {
-        int roundMerged = 0;
-        try {
-          await pushTo(host, port);
-          roundMerged++;
-        } catch (e) {
-          print('[SYNC] 第 $round 轮 push 失败: $e');
-        }
-        try {
-          await pullFrom(host, port);
-          roundMerged++;
-        } catch (e) {
-          print('[SYNC] 第 $round 轮 pull 失败: $e');
-        }
-        totalMerged += roundMerged;
-        if (round < 2) {
-          await Future.delayed(const Duration(milliseconds: 200));
-        }
+      // Single round push+pull (sufficient for most cases)
+      try {
+        await pushTo(host, port);
+      } catch (e) {
+        print('[SYNC] push 失败: $e');
       }
-      print('[SYNC] 2 轮校对完成');
+      try {
+        await pullFrom(host, port);
+      } catch (e) {
+        print('[SYNC] pull 失败: $e');
+      }
 
       // Download missing image files — non-critical, catch errors independently
       try {
@@ -696,7 +677,7 @@ class SyncService {
       }
       statusNotifier.value = SyncStatus.idle;
       print('[SYNC] fullSync 完成: $host:$port');
-      return totalMerged;
+      return 1;
     } catch (e) {
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '连接失败: $e';
@@ -714,7 +695,6 @@ class SyncService {
       print('[SERVER] 处理 ${deletedIds.length} 个永久删除');
       for (final id in deletedIds) {
         await db.delete('note_content', where: 'note_id = ?', whereArgs: [id]);
-        await db.delete('fts_content', where: 'note_id = ?', whereArgs: [id]);
         await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
       }
       merged += deletedIds.length;
@@ -769,17 +749,6 @@ class SyncService {
           batch.update('note_content', _toDbMap(c), where: 'note_id = ?', whereArgs: [noteId]);
           merged++;
         }
-      }
-      await batch.commit(noResult: true);
-    }
-
-    if (data['fts'] != null && (data['fts'] as List).isNotEmpty) {
-      final batch = db.batch();
-      for (final f in (data['fts'] as List)) {
-        batch.rawInsert(
-          'INSERT OR REPLACE INTO fts_content(note_id, title, content) VALUES(?, ?, ?)',
-          [f['note_id'], f['title'], f['content']],
-        );
       }
       await batch.commit(noResult: true);
     }
@@ -940,10 +909,6 @@ class SyncService {
       'SELECT nc.* FROM note_content nc INNER JOIN nodes n ON n.id = nc.note_id WHERE n.modified_at > ?',
       [lastSync],
     );
-    final fts = await db.rawQuery(
-      'SELECT fc.* FROM fts_content fc INNER JOIN nodes n ON n.id = fc.note_id WHERE n.modified_at > ?',
-      [lastSync],
-    );
     final reminders = await db.query(
       'reminders',
       where: 'modified_at > ?',
@@ -966,7 +931,6 @@ class SyncService {
     final pullPayload = <String, dynamic>{
       'nodes': nodes,
       'content': content,
-      'fts': fts,
       'images': images,
       'reminders': reminders,
       'todos': todos,
@@ -1014,10 +978,6 @@ class SyncService {
       'SELECT nc.* FROM note_content nc INNER JOIN nodes n ON n.id = nc.note_id WHERE n.modified_at > ?',
       [oldLastSync],
     );
-    final newFts = await db.rawQuery(
-      'SELECT fc.* FROM fts_content fc INNER JOIN nodes n ON n.id = fc.note_id WHERE n.modified_at > ?',
-      [oldLastSync],
-    );
     final newReminders = await db.query(
       'reminders',
       where: 'modified_at > ?',
@@ -1039,7 +999,6 @@ class SyncService {
       'server_time': DateTime.now().millisecondsSinceEpoch,
       'nodes': newNodes,
       'content': newContent,
-      'fts': newFts,
       'images': newImages,
       'reminders': newReminders,
       'todos': newTodos,

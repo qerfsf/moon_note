@@ -78,7 +78,6 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
     SyncService.instance.addPendingDelete(id);
     final db = await DatabaseHelper.instance.database;
     await db.delete('note_content', where: 'note_id = ?', whereArgs: [id]);
-    await db.delete('fts_content', where: 'note_id = ?', whereArgs: [id]);
     await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
     await ImageService.instance.deleteImagesForNote(id);
     await _loadItems();
@@ -135,8 +134,6 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
     final db = await DatabaseHelper.instance.database;
     for (final id in _selectedIds) {
       await db.delete('note_content',
-          where: 'note_id = ?', whereArgs: [id]);
-      await db.delete('fts_content',
           where: 'note_id = ?', whereArgs: [id]);
       await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
       await ImageService.instance.deleteImagesForNote(id);
@@ -200,11 +197,9 @@ class _RecycleBinPageState extends State<RecycleBinPage> {
     for (final row in noteRows) {
       await ImageService.instance.deleteImagesForNote(row['id'] as String);
     }
-    // Delete all note_content and fts_content for deleted notes
+    // Delete all note_content for deleted notes
     await db.rawDelete(
       'DELETE FROM note_content WHERE note_id IN (SELECT id FROM nodes WHERE is_deleted = 1)');
-    await db.rawDelete(
-      'DELETE FROM fts_content WHERE note_id IN (SELECT id FROM nodes WHERE is_deleted = 1)');
     await db.delete('nodes', where: 'is_deleted = 1');
     await _loadItems();
     SyncService.instance.dataVersionNotifier.value++;

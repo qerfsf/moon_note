@@ -159,12 +159,12 @@ class _NoteSearchDelegate extends SearchDelegate<String> {
     final db = await DatabaseHelper.instance.database;
     final like = '%$keyword%';
     return await db.rawQuery('''
-      SELECT DISTINCT f.note_id, f.title,
-        substr(f.content, 1, 100) as content
-      FROM fts_content f
-      INNER JOIN nodes n ON n.id = f.note_id
-      WHERE n.is_deleted = 0
-        AND (f.title LIKE ? OR f.content LIKE ?)
+      SELECT n.id as note_id, n.title,
+        substr(nc.content, 1, 100) as content
+      FROM nodes n
+      INNER JOIN note_content nc ON nc.note_id = n.id
+      WHERE n.is_deleted = 0 AND n.type = 'note'
+        AND (n.title LIKE ? OR nc.content LIKE ?)
       ORDER BY n.content_modified_at DESC
       LIMIT 50
     ''', [like, like]);
@@ -190,7 +190,6 @@ class _HomePageState extends State<HomePage> {
   String _sortField = 'content_modified_at';
   String _sortDir = 'DESC';
   DateTime? _lastBackPress;
-  String? _hoveredId;
   String? _selectedNoteId;
   String _selectedNoteTitle = '';
   bool _isMouseDown = false;
@@ -230,6 +229,7 @@ class _HomePageState extends State<HomePage> {
     NotificationService.instance.drainPendingQuickNote();
     if (!_isDesktop) _checkBatteryOptimization();
     _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) => _trySync(showToast: false));
+    _syncFailCount = 0;
     _reminderTimer = Timer.periodic(const Duration(seconds: 15), (_) => _checkReminders());
     NotificationService.instance.onReminderFired = _onReminderFired;
     SyncService.instance.dataVersionNotifier.addListener(_onRemoteDataChanged);
@@ -497,6 +497,7 @@ class _HomePageState extends State<HomePage> {
   bool _isSyncing = false;
   Timer? _syncTimer;
   Timer? _reminderTimer;
+  int _syncFailCount = 0;
   final Set<String> _firedReminderIds = {};
 
   void _onRemoteDataChanged() => _loadNodes();
@@ -534,6 +535,7 @@ class _HomePageState extends State<HomePage> {
         }
       }
       if (synced) {
+        _syncFailCount = 0;
         await _loadNodes();
         print('[SYNC] 同步完成');
         if (showToast && mounted) {
@@ -546,7 +548,17 @@ class _HomePageState extends State<HomePage> {
           );
         }
       } else {
+        _syncFailCount++;
         print('[SYNC] 本次未执行同步（无设备/无连接）');
+        // Backoff: after 6 consecutive failures (~1 min), slow to 60s intervals
+        if (_syncFailCount == 6) {
+          _syncTimer?.cancel();
+          _syncTimer = Timer.periodic(
+            const Duration(seconds: 60),
+            (_) => _trySync(showToast: false),
+          );
+          print('[SYNC] 连续失败，间隔调整为 60 秒');
+        }
       }
     } finally {
       _isSyncing = false;
@@ -647,11 +659,6 @@ class _HomePageState extends State<HomePage> {
         'content': '',
         'modified_at': now,
       });
-      await db.insert('fts_content', {
-        'note_id': id,
-        'title': title,
-        'content': '',
-      });
       await _loadNodes();
       _scheduleQuickSync();
       if (_isDesktop && !isJournal) {
@@ -702,11 +709,6 @@ class _HomePageState extends State<HomePage> {
         'note_id': id,
         'content': '',
         'modified_at': now,
-      });
-      await db.insert('fts_content', {
-        'note_id': id,
-        'title': '未命名',
-        'content': '',
       });
       if (_currentFolderId == null) {
         await _loadNodes();
@@ -820,7 +822,6 @@ class _HomePageState extends State<HomePage> {
     final id = node['id'];
     if (node['type'] == 'note') {
       await db.delete('note_content', where: 'note_id = ?', whereArgs: [id]);
-      await db.delete('fts_content', where: 'note_id = ?', whereArgs: [id]);
       await ImageService.instance.deleteImagesForNote(id);
     }
     await db.delete('nodes', where: 'id = ?', whereArgs: [id]);
@@ -1195,12 +1196,6 @@ class _HomePageState extends State<HomePage> {
         where: 'id = ?',
         whereArgs: [node['id']],
       );
-      if (node['type'] == 'note') {
-        await db.rawInsert(
-          'INSERT OR REPLACE INTO fts_content(note_id, title, content) SELECT note_id, ?, content FROM fts_content WHERE note_id = ?',
-          [result, node['id']],
-        );
-      }
       if (node['id'] == _currentFolderId) {
         _currentFolderTitle = result;
       }
@@ -1836,21 +1831,29 @@ class _HomePageState extends State<HomePage> {
     final isFolder = node['type'] == 'folder';
     final isSelected = _selectedIds.contains(nodeId);
     final isSystem = (node['is_system'] as int) == 1;
-    final isHovered = _hoveredId == nodeId;
 
-    return MouseRegion(
-      onEnter: (_) {
-        if (mounted) {
-          setState(() => _hoveredId = nodeId);
-          if (_isSelecting && _isMouseDown) {
-            _toggleSelection(nodeId);
+    return _HoverableRow(
+      hoverColor: _bgHover,
+      isSelecting: _isSelecting,
+      onTap: () {
+        if (_isSelecting) {
+          _toggleSelection(nodeId);
+        } else if (isFolder) {
+          setState(() {
+            _currentFolderId = node['id'];
+            _currentFolderTitle = node['title'];
+          });
+          _loadNodes();
+          if ((node['title'] as String).contains('未命名')) {
+            _startEditingTitle();
           }
+        } else {
+          setState(() {
+            _selectedNoteId = node['id'];
+            _selectedNoteTitle = node['title'];
+          });
         }
       },
-      onExit: (_) {
-        if (mounted) setState(() => _hoveredId = null);
-      },
-      cursor: _isSelecting ? SystemMouseCursors.click : SystemMouseCursors.click,
       child: Listener(
         onPointerDown: (d) => _dragStart = d.localPosition,
         onPointerUp: (d) {
@@ -1870,9 +1873,9 @@ class _HomePageState extends State<HomePage> {
         direction: _isSelecting
             ? DismissDirection.none
             : DismissDirection.endToStart,
-        movementDuration: const Duration(milliseconds: 200),
+        movementDuration: const Duration(milliseconds: 500),
         dismissThresholds:
-            const {DismissDirection.endToStart: 0.3},
+            const {DismissDirection.endToStart: 0.5},
         confirmDismiss: (direction) async {
           if (isSystem) return false;
           setState(() => _nodes.removeWhere((n) => n['id'] == nodeId));
@@ -1892,25 +1895,6 @@ class _HomePageState extends State<HomePage> {
         ),
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: () {
-            if (_isSelecting) {
-              _toggleSelection(nodeId);
-            } else if (isFolder) {
-              setState(() {
-                _currentFolderId = node['id'];
-                _currentFolderTitle = node['title'];
-              });
-              _loadNodes();
-              if ((node['title'] as String).contains('未命名')) {
-                _startEditingTitle();
-              }
-            } else {
-              setState(() {
-                _selectedNoteId = node['id'];
-                _selectedNoteTitle = node['title'];
-              });
-            }
-          },
           onDoubleTap: () {
             if (!_isSelecting && !isSystem) _renameNode(node);
           },
@@ -1921,7 +1905,6 @@ class _HomePageState extends State<HomePage> {
           },
           child: Container(
             decoration: BoxDecoration(
-              color: isHovered ? _bgHover : Colors.transparent,
               border: Border(
                   bottom: BorderSide(color: _borderLight, width: 0.5)),
             ),
@@ -1982,10 +1965,8 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                 ),
-                AnimatedOpacity(
-                  opacity: isHovered && !_isSelecting ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 150),
-                  child: Row(
+                if (!_isSelecting)
+                  Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _desktopActionBtn(
@@ -2012,15 +1993,14 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ],
                   ),
-                ),
-                if (!_isSelecting && isFolder && !isHovered)
+                if (!_isSelecting && isFolder)
                   Icon(Icons.chevron_right, size: 16, color: _borderLight),
               ],
             ),
           ),
-          ),
         ),
       ),
+    ),
     );
   }
 
@@ -2739,9 +2719,9 @@ class _HomePageState extends State<HomePage> {
                     direction: _isSelecting
                         ? DismissDirection.none
                         : DismissDirection.endToStart,
-                    movementDuration: Duration.zero,
+                    movementDuration: const Duration(milliseconds: 500),
                     dismissThresholds:
-                        const {DismissDirection.endToStart: 0.2},
+                        const {DismissDirection.endToStart: 0.5},
                     confirmDismiss: (direction) async {
                       if (isSystem) return false;
                       setState(() => _nodes.removeWhere(
@@ -2939,6 +2919,53 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ],
               ),
+      ),
+    );
+  }
+}
+
+// ── Local-hover row wrapper (avoids parent setState on hover) ──────
+
+class _HoverableRow extends StatefulWidget {
+  final Widget child;
+  final Color hoverColor;
+  final Color normalColor;
+  final VoidCallback? onTap;
+  final bool isSelecting;
+
+  const _HoverableRow({
+    required this.child,
+    required this.hoverColor,
+    this.normalColor = Colors.transparent,
+    this.onTap,
+    this.isSelecting = false,
+  });
+
+  @override
+  State<_HoverableRow> createState() => _HoverableRowState();
+}
+
+class _HoverableRowState extends State<_HoverableRow> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) {
+        if (mounted) setState(() => _hovered = true);
+      },
+      onExit: (_) {
+        if (mounted) setState(() => _hovered = false);
+      },
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            color: _hovered ? widget.hoverColor : widget.normalColor,
+          ),
+          child: widget.child,
+        ),
       ),
     );
   }

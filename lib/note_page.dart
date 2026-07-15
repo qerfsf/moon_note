@@ -49,7 +49,8 @@ class _NotePageState extends State<NotePage> {
   Timer? _snapshotDebounce;
   Timer? _saveDebounce;
   bool _isUndoRedo = false;
-  int _lastPreviewHash = 0;
+  int _contentVersion = 0;
+  int _lastPreviewVersion = -1;
   double _lastPreviewFontSize = 0;
   Widget? _cachedPreview;
 
@@ -184,6 +185,7 @@ class _NotePageState extends State<NotePage> {
 
   void _onContentChanged() {
     if (_isUndoRedo) return;
+    _contentVersion++;
     _scheduleSnapshot();
     _scheduleSave();
   }
@@ -217,7 +219,7 @@ class _NotePageState extends State<NotePage> {
     if (_undoStack.isNotEmpty && _undoStack.last == text) return;
     _undoStack.add(text);
     _redoStack.clear();
-    if (_undoStack.length > 80) _undoStack.removeAt(0);
+    if (_undoStack.length > 30) _undoStack.removeAt(0);
   }
 
   void _undo() {
@@ -288,10 +290,6 @@ class _NotePageState extends State<NotePage> {
       );
       _loadedContent = _contentController.text;
     }
-    await db.rawInsert(
-      'INSERT OR REPLACE INTO fts_content(note_id, title, content) VALUES(?, ?, ?)',
-      [widget.noteId, title, _contentController.text],
-    );
     if (contentChanged) {
       await DatabaseHelper.instance.syncTodosFromMarkdown(
           widget.noteId, _contentController.text);
@@ -312,7 +310,6 @@ class _NotePageState extends State<NotePage> {
 
     _contentController.text = newContent;
     _loadedContent = newContent;
-    _cachedPreview = null;
     setState(() {});
     _onContentChanged();
     _doSave();
@@ -834,7 +831,7 @@ class _NotePageState extends State<NotePage> {
                   case 'toggle_images':
                     setState(() => _showImages = !_showImages);
                     _saveImageSetting();
-                    _cachedPreview = null;
+                    _contentVersion++;
                     break;
                 }
               },
@@ -952,13 +949,12 @@ class _NotePageState extends State<NotePage> {
   Widget _buildPreview() {
     final content = _contentController.text;
     final chars = content.length;
-    final hash = content.hashCode;
-    if (hash == _lastPreviewHash &&
+    if (_contentVersion == _lastPreviewVersion &&
         _fontSize == _lastPreviewFontSize &&
         _cachedPreview != null) {
       return _cachedPreview!;
     }
-    _lastPreviewHash = hash;
+    _lastPreviewVersion = _contentVersion;
     _lastPreviewFontSize = _fontSize;
 
     // Parse todo items manually (more reliable than MarkdownBody checkboxBuilder)

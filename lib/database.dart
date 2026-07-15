@@ -156,7 +156,7 @@ class DatabaseHelper {
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       await DatabaseHelper._migrateFromOldLocations();
     }
-    return await openDatabase(path, version: 10,
+    return await openDatabase(path, version: 11,
         onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
@@ -256,6 +256,8 @@ class DatabaseHelper {
     await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id, is_deleted)');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_modified ON nodes(modified_at)');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type, is_deleted)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_reminders_done_at ON reminders(is_done, remind_at)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_todos_done ON todos(is_done)');
   }
 
   Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
@@ -336,6 +338,12 @@ class DatabaseHelper {
         )
       ''');
       await db.execute('CREATE INDEX IF NOT EXISTS idx_todos_note ON todos(note_id, is_done)');
+    }
+    if (oldVersion < 11) {
+      // Remove fake fts_content table — search now queries note_content directly
+      await db.execute('DROP TABLE IF EXISTS fts_content');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_reminders_done_at ON reminders(is_done, remind_at)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_todos_done ON todos(is_done)');
     }
   }
 
@@ -451,29 +459,25 @@ class DatabaseHelper {
       [now, id],
     );
 
-    // Also toggle in note_content markdown
+    // Also toggle in note_content markdown (regex to avoid ambiguity with duplicate titles)
     final contentRows = await db.query('note_content',
         where: 'note_id = ?', whereArgs: [noteId]);
     if (contentRows.isNotEmpty) {
       final content = contentRows.first['content'] as String;
-      final source = currentDone ? '- [x] $title' : '- [ ] $title';
-      final target = currentDone ? '- [ ] $title' : '- [x] $title';
-      if (content.contains(source)) {
-        final newContent = content.replaceFirst(source, target);
+      final sourceRe = RegExp(
+        '^[-*]\\s*\\[${currentDone ? '[xX]' : ' '}\\]\\s*${RegExp.escape(title)}\\s*\$',
+        multiLine: true,
+      );
+      final match = sourceRe.firstMatch(content);
+      if (match != null) {
+        final marker = currentDone ? '[ ]' : '[x]';
+        final newContent =
+            '${content.substring(0, match.start)}$marker${content.substring(match.start + 3)}';
         await db.update(
           'note_content',
           {'content': newContent, 'modified_at': now},
           where: 'note_id = ?',
           whereArgs: [noteId],
-        );
-        // Also update fts_content
-        final nodeRows = await db.query('nodes',
-            where: 'id = ?', whereArgs: [noteId]);
-        final nodeTitle =
-            nodeRows.isNotEmpty ? nodeRows.first['title'] as String : '';
-        await db.rawInsert(
-          'INSERT OR REPLACE INTO fts_content(note_id, title, content) VALUES(?, ?, ?)',
-          [noteId, nodeTitle, newContent],
         );
         // Update node modified_at for sync
         await db.update(
@@ -499,7 +503,7 @@ class DatabaseHelper {
       SELECT t.id, t.note_id, t.title, t.is_done, t.sort_order,
              n.title as note_title
       FROM todos t
-      LEFT JOIN nodes n ON n.id = t.note_id
+      INNER JOIN nodes n ON n.id = t.note_id
       WHERE t.is_done = 0 AND n.is_deleted = 0
       ORDER BY t.sort_order ASC
       LIMIT ?
@@ -509,7 +513,7 @@ class DatabaseHelper {
   Future<int> getPendingTodoCount() async {
     final db = await database;
     final result = await db.rawQuery(
-      'SELECT COUNT(*) as cnt FROM todos t LEFT JOIN nodes n ON n.id = t.note_id WHERE t.is_done = 0 AND n.is_deleted = 0'
+      'SELECT COUNT(*) as cnt FROM todos t INNER JOIN nodes n ON n.id = t.note_id WHERE t.is_done = 0 AND n.is_deleted = 0'
     );
     return Sqflite.firstIntValue(result) ?? 0;
   }
