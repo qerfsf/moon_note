@@ -492,6 +492,28 @@ class DatabaseHelper {
     await db.delete('todos', where: 'id = ?', whereArgs: [id]);
   }
 
+  Future<List<Map<String, dynamic>>> getPendingTodosWithNoteTitles(
+      {int limit = 5}) async {
+    final db = await database;
+    return await db.rawQuery('''
+      SELECT t.id, t.note_id, t.title, t.is_done, t.sort_order,
+             n.title as note_title
+      FROM todos t
+      LEFT JOIN nodes n ON n.id = t.note_id
+      WHERE t.is_done = 0 AND n.is_deleted = 0
+      ORDER BY t.sort_order ASC
+      LIMIT ?
+    ''', [limit]);
+  }
+
+  Future<int> getPendingTodoCount() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as cnt FROM todos t LEFT JOIN nodes n ON n.id = t.note_id WHERE t.is_done = 0 AND n.is_deleted = 0'
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
   Future<void> syncTodosFromMarkdown(String noteId, String content) async {
     final db = await database;
     final now = DateTime.now().millisecondsSinceEpoch;

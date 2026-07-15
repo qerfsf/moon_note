@@ -12,6 +12,7 @@ import 'todo_page.dart';
 import 'notification_service.dart';
 import 'sync_service.dart';
 import 'image_service.dart';
+import 'app_navigator.dart';
 
 class _NoteSearchDelegate extends SearchDelegate<String> {
   final Map<String, List<Map<String, dynamic>>> _cache = {};
@@ -184,6 +185,8 @@ class _HomePageState extends State<HomePage> {
   bool _isSelecting = false;
   final Set<String> _selectedIds = {};
   Set<String> _reminderNoteIds = {};
+  int _reminderCount = 0;
+  bool _todoNotificationEnabled = true;
   String _sortField = 'content_modified_at';
   String _sortDir = 'DESC';
   DateTime? _lastBackPress;
@@ -193,6 +196,7 @@ class _HomePageState extends State<HomePage> {
   bool _isMouseDown = false;
   Offset? _dragStart;
   bool _isEditingTitle = false;
+  bool _sidebarCollapsed = false;
   late final TextEditingController _titleEditController;
   late final FocusNode _titleEditFocusNode;
 
@@ -226,10 +230,16 @@ class _HomePageState extends State<HomePage> {
     NotificationService.instance.drainPendingQuickNote();
     if (!_isDesktop) _checkBatteryOptimization();
     _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) => _trySync(showToast: false));
-    _reminderTimer = Timer.periodic(const Duration(seconds: 30), (_) => _checkReminders());
+    _reminderTimer = Timer.periodic(const Duration(seconds: 15), (_) => _checkReminders());
     NotificationService.instance.onReminderFired = _onReminderFired;
     SyncService.instance.dataVersionNotifier.addListener(_onRemoteDataChanged);
+    // Check reminders when app resumes from background
+    WidgetsBinding.instance.addObserver(_lifecycleObserver);
   }
+
+  late final WidgetsBindingObserver _lifecycleObserver = _AppLifecycleObserver(onResume: () {
+    _checkReminders();
+  });
 
   @override
   void dispose() {
@@ -238,6 +248,7 @@ class _HomePageState extends State<HomePage> {
     _syncTimer?.cancel();
     _quickSyncTimer?.cancel();
     _reminderTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(_lifecycleObserver);
     SyncService.instance.dataVersionNotifier.removeListener(_onRemoteDataChanged);
     super.dispose();
   }
@@ -317,11 +328,42 @@ class _HomePageState extends State<HomePage> {
       _nodes = nodes;
       _reminderNoteIds =
           reminders.map((r) => r['note_id'] as String).toSet();
+      _reminderCount = reminders.length;
     });
 
     if (_currentFolderId == null) {
       _checkSystemFolders(nodes);
     }
+    if (_todoNotificationEnabled) {
+      _updateTodoNotification();
+    }
+  }
+
+  Future<void> _updateTodoNotification() async {
+    final count = await DatabaseHelper.instance.getPendingTodoCount();
+    if (count == 0) {
+      await NotificationService.instance.cancelTodoNotification();
+      return;
+    }
+    final todos =
+        await DatabaseHelper.instance.getPendingTodosWithNoteTitles(limit: 5);
+    final lines = <String>[];
+    for (final t in todos) {
+      final noteTitle = t['note_title'] as String? ?? '';
+      final todoTitle = t['title'] as String;
+      if (noteTitle.isNotEmpty) {
+        lines.add('○ $todoTitle · $noteTitle');
+      } else {
+        lines.add('○ $todoTitle');
+      }
+    }
+    if (count > 5) {
+      lines.add('...还有 ${count - 5} 条待办');
+    }
+    await NotificationService.instance.showTodoNotification(
+      title: '待办事项 ($count)',
+      body: lines.join('\n'),
+    );
   }
 
   Future<void> _checkReminders() async {
@@ -333,6 +375,9 @@ class _HomePageState extends State<HomePage> {
         where: 'is_done = 0 AND remind_at <= ?',
         whereArgs: [now],
       );
+
+      if (due.isEmpty) return;
+
       for (final r in due) {
         final remId = r['id'] as String;
         if (_firedReminderIds.contains(remId)) continue;
@@ -401,9 +446,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onReminderFired(String title, String body, String? noteId) {
-    if (!mounted) return;
+    // Use global navigatorKey to show dialog regardless of current route
+    final navContext = navigatorKey.currentState?.overlay?.context;
+    if (navContext == null) return;
     showDialog(
-      context: context,
+      context: navContext,
       builder: (ctx) => AlertDialog(
         title: Text(title.isNotEmpty ? title : '提醒',
             style: TextStyle(
@@ -429,7 +476,7 @@ class _HomePageState extends State<HomePage> {
                   });
                 } else {
                   Navigator.push(
-                    context,
+                    ctx,
                     MaterialPageRoute(
                       builder: (context) => NotePage(
                         noteId: noteId,
@@ -575,6 +622,7 @@ class _HomePageState extends State<HomePage> {
       final now = DateTime.now().millisecondsSinceEpoch;
       final id = now.toString();
       final isJournal = _currentFolderId == 'system_journal';
+      final isReminders = _currentFolderId == 'system_reminders';
       final now2 = DateTime.now();
       final title = isJournal
           ? '${now2.year}/${now2.month.toString().padLeft(2, '0')}/${now2.day.toString().padLeft(2, '0')}'
@@ -610,6 +658,19 @@ class _HomePageState extends State<HomePage> {
         setState(() {
           _selectedNoteId = id;
           _selectedNoteTitle = title;
+        });
+      }
+      // Auto-show reminder dialog when creating in reminders folder
+      if (isReminders && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _showReminderDialog({
+              'id': id,
+              'type': 'note',
+              'title': title,
+              'is_system': 0,
+            });
+          }
         });
       }
     } catch (e) {
@@ -701,6 +762,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _goBack() async {
+    // Finish title editing before navigating back
+    if (_isEditingTitle) {
+      _finishEditingTitle();
+    }
     if (_currentFolderId == null) return;
     final db = await DatabaseHelper.instance.database;
     final result = await db.query(
@@ -735,6 +800,10 @@ class _HomePageState extends State<HomePage> {
       where: 'id = ?',
       whereArgs: [node['id']],
     );
+    // Immediately remove from local list for instant UI feedback
+    setState(() {
+      _nodes.removeWhere((n) => n['id'] == node['id']);
+    });
     _scheduleQuickSync();
   }
 
@@ -968,6 +1037,38 @@ class _HomePageState extends State<HomePage> {
     _scheduleQuickSync();
   }
 
+  Widget _reminderDot({int? count}) {
+    if (count != null && count > 0) {
+      return Container(
+        width: 18,
+        height: 18,
+        margin: const EdgeInsets.only(right: 6),
+        decoration: BoxDecoration(
+          color: _red,
+          shape: BoxShape.circle,
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          count > 99 ? '99+' : count.toString(),
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      );
+    }
+    return Container(
+      width: 8,
+      height: 8,
+      margin: const EdgeInsets.only(right: 6),
+      decoration: BoxDecoration(
+        color: _red,
+        shape: BoxShape.circle,
+      ),
+    );
+  }
+
   Widget _buildAppBarTitle() {
     if (_isEditingTitle) {
       return Material(
@@ -979,6 +1080,7 @@ class _HomePageState extends State<HomePage> {
             focusNode: _titleEditFocusNode,
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _finishEditingTitle(),
+            onTapOutside: (_) => _finishEditingTitle(),
             style: TextStyle(
               color: Theme.of(context).colorScheme.onSurface,
               fontWeight: FontWeight.w600,
@@ -1193,6 +1295,8 @@ class _HomePageState extends State<HomePage> {
     }
 
     await _loadNodes();
+    // Immediately check reminders after setting one
+    _checkReminders();
   }
 
   void _addDescendantIds(
@@ -1848,13 +1952,13 @@ class _HomePageState extends State<HomePage> {
                         Icon(Icons.push_pin, size: 17, color: _textSecondary),
                   ),
                 if (!_isSelecting &&
+                    nodeId == 'system_reminders' &&
+                    _reminderCount > 0)
+                  _reminderDot(count: _reminderCount),
+                if (!_isSelecting &&
                     !isFolder &&
                     _reminderNoteIds.contains(nodeId))
-                  Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: Icon(Icons.notifications_active,
-                        size: 14, color: _textSecondary),
-                  ),
+                  _reminderDot(),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1937,9 +2041,10 @@ class _HomePageState extends State<HomePage> {
       color: Theme.of(context).colorScheme.surface,
       child: Row(
       children: [
-        SizedBox(
-          width: 320,
-          child: Scaffold(
+        if (!_sidebarCollapsed) ...[
+          SizedBox(
+            width: 320,
+            child: Scaffold(
             backgroundColor: Theme.of(context).colorScheme.surface,
             appBar: AppBar(
               backgroundColor: Theme.of(context).colorScheme.surface,
@@ -2024,6 +2129,29 @@ class _HomePageState extends State<HomePage> {
                                       const TodoPage()),
                             );
                             _loadNodes();
+                          },
+                        ),
+                      if (_currentFolderId == null)
+                        IconButton(
+                          icon: Icon(
+                            _todoNotificationEnabled
+                                ? Icons.notifications_active_outlined
+                                : Icons.notifications_off_outlined,
+                            size: 20,
+                            color: _todoNotificationEnabled
+                                ? Theme.of(context).colorScheme.onSurfaceVariant
+                                : Theme.of(context).colorScheme.outline,
+                          ),
+                          tooltip: _todoNotificationEnabled ? '关闭待办通知' : '开启待办通知',
+                          onPressed: () {
+                            setState(() {
+                              _todoNotificationEnabled = !_todoNotificationEnabled;
+                            });
+                            NotificationService.instance
+                                .setTodoNotificationVisible(_todoNotificationEnabled);
+                            if (_todoNotificationEnabled) {
+                              _updateTodoNotification();
+                            }
                           },
                         ),
                       if (_currentFolderId == null)
@@ -2198,10 +2326,34 @@ class _HomePageState extends State<HomePage> {
                   ),
           ),
         ),
-        VerticalDivider(
-          width: 1,
-          thickness: 1,
-          color: Theme.of(context).colorScheme.outlineVariant,
+      ],
+        if (!_sidebarCollapsed)
+          VerticalDivider(
+            width: 1,
+            thickness: 1,
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+        GestureDetector(
+          onTap: () => setState(() => _sidebarCollapsed = !_sidebarCollapsed),
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: Container(
+              width: 22,
+              height: 64,
+              margin: const EdgeInsets.symmetric(vertical: 12),
+              decoration: BoxDecoration(
+                color: _bgHover,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Center(
+                child: Icon(
+                  _sidebarCollapsed ? Icons.chevron_right : Icons.chevron_left,
+                  size: 20,
+                  color: _textSecondary,
+                ),
+              ),
+            ),
+          ),
         ),
         Expanded(child: _buildRightPanel()),
       ],
@@ -2351,6 +2503,10 @@ class _HomePageState extends State<HomePage> {
           _exitSelection();
           return;
         }
+        if (_isEditingTitle) {
+          _finishEditingTitle();
+          return;
+        }
         if (_currentFolderId != null) {
           _goBack();
           return;
@@ -2434,6 +2590,29 @@ class _HomePageState extends State<HomePage> {
                                   const TodoPage()),
                         );
                         _loadNodes();
+                      },
+                    ),
+                  if (_currentFolderId == null)
+                    IconButton(
+                      icon: Icon(
+                        _todoNotificationEnabled
+                            ? Icons.notifications_active_outlined
+                            : Icons.notifications_off_outlined,
+                        size: 20,
+                        color: _todoNotificationEnabled
+                            ? Theme.of(context).colorScheme.onSurfaceVariant
+                            : Theme.of(context).colorScheme.outline,
+                      ),
+                      tooltip: _todoNotificationEnabled ? '关闭待办通知' : '开启待办通知',
+                      onPressed: () {
+                        setState(() {
+                          _todoNotificationEnabled = !_todoNotificationEnabled;
+                        });
+                        NotificationService.instance
+                            .setTodoNotificationVisible(_todoNotificationEnabled);
+                        if (_todoNotificationEnabled) {
+                          _updateTodoNotification();
+                        }
                       },
                     ),
                   if (_currentFolderId == null)
@@ -2655,13 +2834,13 @@ class _HomePageState extends State<HomePage> {
                                 ),
                               ),
                             if (!_isSelecting &&
+                                nodeId == 'system_reminders' &&
+                                _reminderCount > 0)
+                              _reminderDot(count: _reminderCount),
+                            if (!_isSelecting &&
                                 !isFolder &&
                                 _reminderNoteIds.contains(nodeId))
-                              Padding(
-                                padding: const EdgeInsets.only(right: 6),
-                                child: Icon(Icons.notifications_active,
-                                    size: 14, color: _textSecondary),
-                              ),
+                              _reminderDot(),
                             Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2939,5 +3118,17 @@ class _ReminderDialogState extends State<_ReminderDialog> {
         ),
       ],
     );
+  }
+}
+
+class _AppLifecycleObserver extends WidgetsBindingObserver {
+  final VoidCallback onResume;
+  _AppLifecycleObserver({required this.onResume});
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      onResume();
+    }
   }
 }

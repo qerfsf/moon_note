@@ -312,6 +312,8 @@ class _NotePageState extends State<NotePage> {
 
     _contentController.text = newContent;
     _loadedContent = newContent;
+    _cachedPreview = null;
+    setState(() {});
     _onContentChanged();
     _doSave();
   }
@@ -364,9 +366,27 @@ class _NotePageState extends State<NotePage> {
     }
 
     final selected = text.substring(start, end);
-    final newText =
-        text.replaceRange(start, end, '$before$selected$after');
-    final cursorPos = start + before.length + selected.length;
+
+    String replacement;
+    if (before == '- [ ] ' && selected.contains('\n')) {
+      // Multi-line todo conversion: split by \n, one todo per non-empty line
+      final lines = selected.split('\n');
+      final buffer = StringBuffer();
+      for (int i = 0; i < lines.length; i++) {
+        final line = lines[i].trimRight();
+        if (line.isEmpty && buffer.isEmpty) continue; // skip leading empty lines
+        if (buffer.isNotEmpty) buffer.write('\n');
+        if (line.isNotEmpty) {
+          buffer.write('- [ ] $line');
+        }
+      }
+      replacement = buffer.toString();
+    } else {
+      replacement = '$before$selected$after';
+    }
+
+    final newText = text.replaceRange(start, end, replacement);
+    final cursorPos = start + replacement.length;
 
     _contentController.value = TextEditingValue(
       text: newText,
@@ -777,6 +797,7 @@ class _NotePageState extends State<NotePage> {
                   _toolbarBtn(Icons.format_italic, '*', '*'),
                   const SizedBox(width: 8),
                   _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
+                  _toolbarBtn(Icons.checklist, '- [ ] ', '', onTap: () => _insertMarkdown('- [ ] ', '')),
                   _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
                   const SizedBox(width: 8),
                   _toolbarBtn(Icons.text_decrease, '', '',
@@ -1031,17 +1052,21 @@ class _NotePageState extends State<NotePage> {
                             child: ListTile(
                               dense: true,
                               leading: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
                                 onTap: () =>
                                     _toggleTodoFromPreviewSimple(
                                         m.start, m.end, checked),
-                                child: Icon(
-                                  checked
-                                      ? Icons.check_box
-                                      : Icons.check_box_outline_blank,
-                                  size: 20,
-                                  color: checked
-                                      ? cs.onSurface
-                                      : cs.outline,
+                                child: Padding(
+                                  padding: const EdgeInsets.all(8),
+                                  child: Icon(
+                                    checked
+                                        ? Icons.check_box
+                                        : Icons.check_box_outline_blank,
+                                    size: 24,
+                                    color: checked
+                                        ? cs.onSurface
+                                        : cs.outline,
+                                  ),
                                 ),
                               ),
                               title: Text(

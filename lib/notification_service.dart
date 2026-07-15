@@ -158,30 +158,69 @@ class NotificationService {
     required String body,
     String? noteId,
   }) async {
-    final isDesktop =
-        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-    if (isDesktop) {
-      // On desktop, fire in-app callback; home_page shows a dialog
-      onReminderFired?.call(noteTitle, body, noteId);
-      return;
-    }
-    final androidDetails = AndroidNotificationDetails(
-      _reminderChannelId,
-      _reminderChannelName,
-      importance: Importance.high,
-      priority: Priority.high,
-      playSound: true,
-      enableVibration: true,
-    );
-    await _plugin.show(
-      id: id,
-      title: noteTitle.isNotEmpty ? noteTitle : '提醒',
-      body: body,
-      notificationDetails:
-          NotificationDetails(android: androidDetails),
-      payload: noteId,
-    );
+    // Fire in-app dialog callback on all platforms
+    onReminderFired?.call(noteTitle, body, noteId);
   }
 
   void Function(String title, String body, String? noteId)? onReminderFired;
+
+  // ── Todo notification ───────────────────────────────────────
+
+  static const _todoChannelId = 'moon_note_todos';
+  static const _todoChannelName = '待办事项';
+  static const _todoNotifyId = 2;
+
+  bool _todoNotificationVisible = true;
+
+  Future<void> initTodoChannel() async {
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    if (isDesktop) return;
+    const androidChannel = AndroidNotificationChannel(
+      _todoChannelId,
+      _todoChannelName,
+      importance: Importance.low,
+      playSound: false,
+      enableVibration: false,
+    );
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(androidChannel);
+  }
+
+  bool get isTodoNotificationVisible => _todoNotificationVisible;
+
+  void setTodoNotificationVisible(bool visible) {
+    _todoNotificationVisible = visible;
+    if (!visible) {
+      cancelTodoNotification();
+    }
+  }
+
+  Future<void> showTodoNotification({required String title, required String body}) async {
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    if (isDesktop || !_todoNotificationVisible) return;
+    final android = AndroidNotificationDetails(
+      _todoChannelId,
+      _todoChannelName,
+      channelDescription: '显示未完成的待办事项',
+      importance: Importance.low,
+      priority: Priority.low,
+      ongoing: true,
+      autoCancel: false,
+      showWhen: false,
+    );
+    await _plugin.show(
+      id: _todoNotifyId,
+      title: title,
+      body: body,
+      notificationDetails: NotificationDetails(android: android),
+    );
+  }
+
+  Future<void> cancelTodoNotification() async {
+    await _plugin.cancel(id: _todoNotifyId);
+  }
 }

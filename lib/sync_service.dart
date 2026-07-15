@@ -570,6 +570,9 @@ class SyncService {
       }
       final body = await utf8.decodeStream(response);
       final data = jsonDecode(body) as Map<String, dynamic>;
+      if (data['server_time'] != null) {
+        await _setLastSyncTime(data['server_time'] as int);
+      }
       if (data['nodes'] != null) {
         await _mergeRemoteData(data);
       }
@@ -653,8 +656,31 @@ class SyncService {
         client.close();
       }
 
-      await pushTo(host, port);
-      await pullFrom(host, port);
+      // Multi-round sync: 2 rounds of push+pull to catch in-flight changes
+      // Round 1: push local → pull remote
+      // Round 2: verify — push any changes that happened during round 1, then pull again
+      int totalMerged = 0;
+      for (int round = 1; round <= 2; round++) {
+        int roundMerged = 0;
+        try {
+          await pushTo(host, port);
+          roundMerged++;
+        } catch (e) {
+          print('[SYNC] 第 $round 轮 push 失败: $e');
+        }
+        try {
+          await pullFrom(host, port);
+          roundMerged++;
+        } catch (e) {
+          print('[SYNC] 第 $round 轮 pull 失败: $e');
+        }
+        totalMerged += roundMerged;
+        if (round < 2) {
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+      }
+      print('[SYNC] 2 轮校对完成');
+
       // Download missing image files — non-critical, catch errors independently
       try {
         final db = await DatabaseHelper.instance.database;
@@ -670,7 +696,7 @@ class SyncService {
       }
       statusNotifier.value = SyncStatus.idle;
       print('[SYNC] fullSync 完成: $host:$port');
-      return 0;
+      return totalMerged;
     } catch (e) {
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '连接失败: $e';

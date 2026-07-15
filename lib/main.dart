@@ -7,6 +7,8 @@ import 'home_page.dart';
 import 'notification_service.dart';
 import 'sync_service.dart';
 
+import 'app_navigator.dart';
+
 final ValueNotifier<ThemeMode> themeNotifier =
     ValueNotifier(ThemeMode.system);
 
@@ -73,6 +75,7 @@ ColorScheme _darkScheme() => ColorScheme.fromSeed(
 ThemeData _theme(ColorScheme cs) => ThemeData(
       colorScheme: cs,
       useMaterial3: true,
+      fontFamily: Platform.isWindows ? 'Microsoft YaHei' : null,
       scaffoldBackgroundColor: cs.surface,
       dividerColor: cs.outlineVariant,
       dialogTheme: DialogThemeData(
@@ -109,6 +112,7 @@ void main() async {
   await NotificationService.instance.requestPermission();
   await NotificationService.instance.showPersistent();
   await NotificationService.instance.initReminderChannel();
+  await NotificationService.instance.initTodoChannel();
   try {
     await SyncService.instance.startServer();
   } catch (_) {}
@@ -135,6 +139,7 @@ class MyApp extends StatelessWidget {
       valueListenable: themeNotifier,
       builder: (context, themeMode, _) {
         return MaterialApp(
+          navigatorKey: navigatorKey,
           title: _title,
           debugShowCheckedModeBanner: false,
           themeMode: themeMode,
