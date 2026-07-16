@@ -194,6 +194,7 @@ class _HomePageState extends State<HomePage> {
   String _selectedNoteTitle = '';
   bool _isMouseDown = false;
   Offset? _dragStart;
+  bool _isHorizontalDrag = false;
   bool _isEditingTitle = false;
   bool _sidebarCollapsed = false;
   late final TextEditingController _titleEditController;
@@ -1855,12 +1856,24 @@ class _HomePageState extends State<HomePage> {
         }
       },
       child: Listener(
-        onPointerDown: (d) => _dragStart = d.localPosition,
-        onPointerUp: (d) {
-          if (_dragStart == null || _isSelecting) return;
-          final dy = (d.localPosition.dy - _dragStart!.dy).abs();
+        onPointerDown: (d) {
+          _dragStart = d.localPosition;
+          _isHorizontalDrag = false;
+        },
+        onPointerMove: (d) {
+          if (_dragStart == null || _isHorizontalDrag) return;
           final dx = (d.localPosition.dx - _dragStart!.dx).abs();
-          if (dy > 40 && dx < dy) {
+          // Once horizontal movement exceeds 5px, lock into delete mode, disable multi-select
+          if (dx > 5) _isHorizontalDrag = true;
+        },
+        onPointerUp: (d) {
+          if (_dragStart == null || _isSelecting || _isHorizontalDrag) {
+            _dragStart = null;
+            _isHorizontalDrag = false;
+            return;
+          }
+          final dy = (d.localPosition.dy - _dragStart!.dy).abs();
+          if (dy > 40) {
             setState(() {
               _isSelecting = true;
               _selectedIds.add(nodeId);
@@ -1966,32 +1979,11 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 if (!_isSelecting)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _desktopActionBtn(
-                        (node['is_pinned'] as int) == 1
-                            ? Icons.push_pin
-                            : Icons.push_pin_outlined,
-                        () => _togglePin(node),
-                      ),
-                      if (!isSystem)
-                        _desktopActionBtn(
-                          Icons.delete_outline,
-                          () {
-                            setState(() => _nodes.removeWhere(
-                                (n) => n['id'] == node['id']));
-                            _deleteNode(node);
-                          },
-                          color: _red,
-                        ),
-                      _desktopActionBtn(
-                        Icons.more_horiz,
-                        () {},
-                        onTapDown: (d) =>
-                            _showDesktopContextMenu(node, d.globalPosition),
-                      ),
-                    ],
+                  _desktopActionBtn(
+                    Icons.more_horiz,
+                    () {},
+                    onTapDown: (d) =>
+                        _showDesktopContextMenu(node, d.globalPosition),
                   ),
                 if (!_isSelecting && isFolder)
                   Icon(Icons.chevron_right, size: 16, color: _borderLight),
@@ -2701,9 +2693,23 @@ class _HomePageState extends State<HomePage> {
 
                   final isSystem = (node['is_system'] as int) == 1;
                   return Listener(
-                    onPointerDown: (d) => _dragStart = d.localPosition,
+                    onPointerDown: (d) {
+                      _dragStart = d.localPosition;
+                      _isHorizontalDrag = false;
+                    },
+                    onPointerMove: (d) {
+                      if (_dragStart == null || _isHorizontalDrag) return;
+                      // Only block multi-select on left-swipe (delete direction).
+                      // Right-swipe is the multi-select trigger itself.
+                      final dx = d.localPosition.dx - _dragStart!.dx;
+                      if (dx < -5) _isHorizontalDrag = true;
+                    },
                     onPointerUp: (d) {
-                      if (_dragStart == null || _isSelecting) return;
+                      if (_dragStart == null || _isSelecting || _isHorizontalDrag) {
+                        _dragStart = null;
+                        _isHorizontalDrag = false;
+                        return;
+                      }
                       final dx = d.localPosition.dx - _dragStart!.dx;
                       final dy = (d.localPosition.dy - _dragStart!.dy).abs();
                       if (dx > 40 && dy < dx) {

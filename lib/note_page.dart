@@ -302,14 +302,13 @@ class _NotePageState extends State<NotePage> {
     final content = _contentController.text;
     final matched = content.substring(start, end);
     final toggled = currentChecked
-        ? matched.replaceFirst(RegExp(r'\[[xX]\]'), '[ ] ')
+        ? matched.replaceFirst(RegExp(r'\[[xX]\]'), '[ ]')
         : matched.replaceFirst(RegExp(r'\[\s\]'), '[x]');
 
     final newContent =
         '${content.substring(0, start)}$toggled${content.substring(end)}';
 
     _contentController.text = newContent;
-    _loadedContent = newContent;
     setState(() {});
     _onContentChanged();
     _doSave();
