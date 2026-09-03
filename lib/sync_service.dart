@@ -650,16 +650,26 @@ class SyncService {
         client.close();
       }
 
-      // Single round push+pull (sufficient for most cases)
-      try {
-        await pushTo(host, port);
-      } catch (e) {
-        print('[SYNC] push 失败: $e');
-      }
+      // Pull FIRST, then push.
+      //
+      // Why: on a fresh install (last_sync_time = 0), pushTo() advances this
+      // device's last_sync_time to the remote "now" as soon as it finishes.
+      // If we pushed first, the subsequent pull would ask the remote for
+      // changes newer than "now" and receive nothing — so all notes that
+      // already exist on the remote would never arrive on this device and the
+      // app looks like it "cannot pair". Pulling first with last_sync = 0
+      // returns the remote's full history; the push afterwards then merges
+      // this device's own changes and advances last_sync_time only after both
+      // directions have been exchanged.
       try {
         await pullFrom(host, port);
       } catch (e) {
         print('[SYNC] pull 失败: $e');
+      }
+      try {
+        await pushTo(host, port);
+      } catch (e) {
+        print('[SYNC] push 失败: $e');
       }
 
       // Download missing image files — non-critical, catch errors independently
