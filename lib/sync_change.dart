@@ -6,15 +6,39 @@ import 'database.dart';
 class SyncChangeItem {
   final String id; // 笔记/文件夹的 node id
   final String path; // 展示用名称(相对路径语义:标题)
-  final String type; // 'added' | 'modified' | 'deleted'
+  final String type; // 'added' | 'modified' | 'deleted' | 'conflict'
   final int size; // 内容字节数(近似,可选)
+
+  /// 同步前的内容快照(本机在被合并覆盖前的内容)。
+  /// 'modified'/'deleted'/'conflict' 且本地存在时记录;否则为 null。
+  final String? oldContent;
+
+  /// 同步后的内容快照(对端收到的/推送后的内容)。
+  /// 对端内容随拉取/推送数据可得时记录;否则为 null。
+  final String? newContent;
+
+  /// 旧版本(同步前/本机)的修改时间,ms;无旧版本时为 0。
+  final int oldTime;
+
+  /// 新版本(同步后/对端/优先版本)的修改时间,ms;无则为 0。
+  final int newTime;
 
   const SyncChangeItem({
     required this.id,
     required this.path,
     required this.type,
     this.size = 0,
+    this.oldContent,
+    this.newContent,
+    this.oldTime = 0,
+    this.newTime = 0,
   });
+
+  /// 内容快照是否足够做对比(两侧任一存在即展示,单侧也允许)。
+  bool get hasSnapshot => oldContent != null || newContent != null;
+
+  /// 对外展示的时间(取新版本的修改时间;删除取删除时间)。
+  int get displayTime => newTime > 0 ? newTime : oldTime;
 
   String get typeLabel {
     switch (type) {
@@ -22,13 +46,30 @@ class SyncChangeItem {
         return '新增';
       case 'deleted':
         return '删除';
+      case 'conflict':
+        return '冲突';
       default:
         return '修改';
     }
   }
 
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'path': path, 'type': type, 'size': size};
+  /// 单侧内容超长时截断,避免日志表无限膨胀(30 天保留)。
+  static String? _cap(String? s) {
+    if (s == null) return null;
+    if (s.length <= 30000) return s;
+    return '${s.substring(0, 30000)}\n…(内容过长已截断)';
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'path': path,
+        'type': type,
+        'size': size,
+        'oldContent': _cap(oldContent),
+        'newContent': _cap(newContent),
+        'oldTime': oldTime,
+        'newTime': newTime,
+      };
 
   factory SyncChangeItem.fromJson(Map<String, dynamic> json) =>
       SyncChangeItem(
@@ -36,6 +77,10 @@ class SyncChangeItem {
         path: json['path'] as String? ?? '未命名',
         type: json['type'] as String? ?? 'modified',
         size: (json['size'] as num?)?.toInt() ?? 0,
+        oldContent: json['oldContent'] as String?,
+        newContent: json['newContent'] as String?,
+        oldTime: (json['oldTime'] as num?)?.toInt() ?? 0,
+        newTime: (json['newTime'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -47,6 +92,12 @@ class SyncRoundResult {
   const SyncRoundResult({required this.timestamp, required this.items});
 
   int get totalChanges => items.length;
+
+  /// 存在并发编辑等"有差异"项(本地与远端同改,未能干净合并)。
+  bool get hasConflict => items.any((e) => e.type == 'conflict');
+
+  List<SyncChangeItem> get conflicts =>
+      items.where((e) => e.type == 'conflict').toList();
 }
 
 /// 变更日志存储:每轮有变更的同步写一条记录,保留最近 30 天。

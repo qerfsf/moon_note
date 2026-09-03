@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'database.dart';
 import 'sync_change.dart';
+import 'sync_compare_page.dart';
 
 String formatSyncTime(int ms) {
   final t = DateTime.fromMillisecondsSinceEpoch(ms).toLocal();
@@ -13,6 +14,8 @@ Color _typeColor(ColorScheme cs, String type) {
   switch (type) {
     case 'added':
       return const Color(0xFF2E7D32); // green
+    case 'conflict':
+      return const Color(0xFFE65100); // orange
     case 'deleted':
       return const Color(0xFFC62828); // red
     default:
@@ -82,11 +85,30 @@ Future<void> showSyncChangeSheet(
   );
 }
 
-/// 变更条目行(详情面板与历史页共用)。点击打开该笔记当前内容的只读查看页。
+/// 变更条目行(详情面板与历史页共用)。点击打开对比页或只读页。
 class SyncChangeItemTile extends StatelessWidget {
   final SyncChangeItem item;
 
   const SyncChangeItemTile({super.key, required this.item});
+
+  static String _shortDate(int ms) {
+    final t = DateTime.fromMillisecondsSinceEpoch(ms).toLocal();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
+  }
+
+  static String _timeVerb(String type) {
+    switch (type) {
+      case 'added':
+        return '新增于';
+      case 'deleted':
+        return '删除于';
+      case 'conflict':
+        return '更新于';
+      default:
+        return '修改于';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -95,7 +117,12 @@ class SyncChangeItemTile extends StatelessWidget {
     return InkWell(
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => SyncChangeViewPage(item: item)),
+        MaterialPageRoute(
+          // 有内容快照 → 差异对比页;否则 → 当前内容只读页
+          builder: (_) => item.hasSnapshot
+              ? SyncChangeComparePage(item: item)
+              : SyncChangeViewPage(item: item),
+        ),
       ),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
@@ -121,14 +148,31 @@ class SyncChangeItemTile extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(item.path,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 14, color: cs.onSurface)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(item.path,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          TextStyle(fontSize: 14, color: cs.onSurface)),
+                  if (item.displayTime > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                          '${_timeVerb(item.type)} ${_shortDate(item.displayTime)}',
+                          style:
+                              TextStyle(fontSize: 11, color: cs.outline)),
+                    ),
+                ],
+              ),
             ),
             if (item.size > 0)
-              Text('${item.size} 字',
-                  style: TextStyle(fontSize: 11, color: cs.outline)),
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Text('${item.size} 字',
+                    style: TextStyle(fontSize: 11, color: cs.outline)),
+              ),
             const SizedBox(width: 4),
             Icon(Icons.chevron_right, size: 16, color: cs.outlineVariant),
           ],

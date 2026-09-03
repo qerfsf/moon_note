@@ -47,19 +47,67 @@ class SyncService {
   static const _adbSyncCooldownMs = 10000;
   static const _lockWatchdogMs = 60000;
   final List<String> _pendingDeleteIds = [];
+  bool _pendingLoaded = false;
+  static const _pendingDeletesKey = 'pending_deletes_json';
+
+  /// 从数据库恢复上次未传播完的永久删除(清空回收站后重启不丢失)。
+  Future<void> _ensurePendingLoaded() async {
+    if (_pendingLoaded) return;
+    _pendingLoaded = true;
+    try {
+      final db = await DatabaseHelper.instance.database;
+      final res = await db.query('app_settings',
+          where: 'key = ?', whereArgs: [_pendingDeletesKey]);
+      if (res.isNotEmpty) {
+        final raw = res.first['value'] as String;
+        if (raw.isNotEmpty && raw != '[]') {
+          final list = jsonDecode(raw) as List;
+          for (final id in list) {
+            if (id is String && !_pendingDeleteIds.contains(id)) {
+              _pendingDeleteIds.add(id);
+            }
+          }
+          if (_pendingDeleteIds.isNotEmpty) {
+            print('[SYNC] 恢复待传播的永久删除: ${_pendingDeleteIds.length} 项');
+          }
+        }
+      }
+    } catch (e) {
+      print('[SYNC] 加载永久删除记录失败: $e');
+    }
+  }
+
+  /// 把当前待传播的永久删除列表写入数据库,保证重启不丢失。
+  Future<void> _persistPendingDeletes() async {
+    try {
+      final db = await DatabaseHelper.instance.database;
+      await db.rawInsert(
+        'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+        [_pendingDeletesKey, jsonEncode(_pendingDeleteIds)],
+      );
+    } catch (e) {
+      print('[SYNC] 保存永久删除记录失败: $e');
+    }
+  }
 
   void addPendingDelete(String id) {
+    _ensurePendingLoaded();
     if (!_pendingDeleteIds.contains(id)) {
       _pendingDeleteIds.add(id);
+      _persistPendingDeletes();
     }
   }
 
   void addPendingDeletes(List<String> ids) {
+    _ensurePendingLoaded();
+    var changed = false;
     for (final id in ids) {
       if (!_pendingDeleteIds.contains(id)) {
         _pendingDeleteIds.add(id);
+        changed = true;
       }
     }
+    if (changed) _persistPendingDeletes();
   }
   void Function(String host, int port)? onAdbDeviceConnected;
 
@@ -493,7 +541,7 @@ class SyncService {
       final body = await utf8.decodeStream(response);
       final data = jsonDecode(body) as Map<String, dynamic>;
       final incoming = await _diffIncomingNodes(
-          data['nodes'] as List?, data['content'] as List?);
+          data['nodes'] as List?, data['content'] as List?, lastSync);
       if (incoming.isNotEmpty) {
         _roundItems.addAll(incoming);
         print('[PULL] 收到 ${incoming.length} 项变更');
@@ -570,6 +618,7 @@ class SyncService {
         'todos': todos,
         'sync_key': await _getSyncKey(),
       };
+      await _ensurePendingLoaded();
       final pendingDeletes = List<String>.from(_pendingDeleteIds);
       if (pendingDeletes.isNotEmpty) {
         payload['deleted_ids'] = pendingDeletes;
@@ -592,13 +641,14 @@ class SyncService {
       }
       if (pendingDeletes.isNotEmpty) {
         _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
+        await _persistPendingDeletes();
       }
       // 记录本轮变更明细:推送出去的本地变更 + 服务器回传的变更
       try {
         final sent = await _diffSentNodes(nodes, content, lastSync);
         _roundItems.addAll(sent);
         final incoming = await _diffIncomingNodes(
-            data['nodes'] as List?, data['content'] as List?);
+            data['nodes'] as List?, data['content'] as List?, lastSync);
         _roundItems.addAll(incoming);
       } catch (e) {
         print('[PUSH] 变更明细统计失败: $e');
@@ -773,10 +823,12 @@ class SyncService {
     return (t == null || t.trim().isEmpty) ? '未命名' : t;
   }
 
-  /// 对端发来的节点相对本地的变更分类(新增/修改/删除)。
-  /// 只统计会实际落地的项:本地不存在→新增;远端较新→修改;is_deleted=1→删除。
+  /// 对端发来的节点相对本地的变更分类(新增/修改/删除/冲突)。
+  /// 只统计会实际落地的项:本地不存在→新增;远端较新→修改;
+  /// is_deleted=1→删除。若本地也在本轮水位线之后改过且远端更新,
+  /// 属于两端并发编辑,标记为"冲突"(差异)。
   Future<List<SyncChangeItem>> _diffIncomingNodes(
-      List? rawNodes, List? rawContents) async {
+      List? rawNodes, List? rawContents, int since) async {
     final items = <SyncChangeItem>[];
     if (rawNodes == null || rawNodes.isEmpty) return items;
     try {
@@ -794,31 +846,59 @@ class SyncService {
             ids);
         localById = {for (final r in rows) r['id'] as String: r};
       }
-      final contentLen = <String, int>{};
+      // 本地已有节点的旧内容快照(合并前)
+      Map<String, String> oldContents = {};
+      if (localById.isNotEmpty) {
+        final ph = localById.keys.map((_) => '?').join(',');
+        final crows = await db.rawQuery(
+            'SELECT note_id, content FROM note_content WHERE note_id IN ($ph)',
+            localById.keys.toList());
+        oldContents = {
+          for (final r in crows)
+            r['note_id'] as String: (r['content'] as String? ?? '')
+        };
+      }
+      // 对端内容(新版本)与长度
+      final newContents = <String, String>{};
       for (final c in contents) {
         final s = c['content'] as String? ?? '';
-        contentLen[c['note_id'] as String] = s.length;
+        newContents[c['note_id'] as String] = s;
       }
       for (final n in nodes) {
         final id = n['id'] as String;
         final remoteModified = (n['modified_at'] as num?)?.toInt() ?? 0;
+        final remoteDeletedAt = (n['deleted_at'] as num?)?.toInt() ?? 0;
         final isDeleted = (n['is_deleted'] as num?)?.toInt() == 1;
         final local = localById[id];
+        final localModified =
+            local == null ? 0 : (local['modified_at'] as num).toInt();
         final String type;
         if (isDeleted) {
           type = 'deleted';
         } else if (local == null) {
           type = 'added';
-        } else if (remoteModified > (local['modified_at'] as num).toInt()) {
-          type = 'modified';
+        } else if (remoteModified > localModified) {
+          // 本地也在此轮水位线之后被修改过 → 两端并发编辑
+          type = (localModified > since) ? 'conflict' : 'modified';
         } else {
           continue;
         }
+        final oldContent = oldContents[id];
+        final newContent = newContents[id];
+        final oldTime = (type == 'added') ? 0 : localModified;
+        final newTime = isDeleted
+            ? (remoteDeletedAt > 0 ? remoteDeletedAt : remoteModified)
+            : remoteModified;
+        final size = newContent?.length ?? oldContent?.length ?? 0;
         items.add(SyncChangeItem(
             id: id,
             path: _changePath(n),
             type: type,
-            size: contentLen[id] ?? 0));
+            size: size,
+            oldContent: oldContent,
+            newContent: newContent,
+            oldTime: oldTime,
+            newTime: newTime));
       }
     } catch (e) {
       print('[SYNC] 变更统计(pull)异常: $e');
@@ -842,15 +922,18 @@ class SyncService {
           'SELECT id FROM nodes WHERE modified_at <= ? AND id IN ($placeholders)',
           [since, ...ids]);
       final existing = {for (final r in rows) r['id'] as String};
-      final contentLen = <String, int>{};
+      // 推送出去的内容(新版本快照)
+      final newContents = <String, String>{};
       for (final e in contents) {
         final c = e as Map;
         final s = c['content'] as String? ?? '';
-        contentLen[c['note_id'] as String] = s.length;
+        newContents[c['note_id'] as String] = s;
       }
       for (final e in nodes) {
         final n = e as Map;
         final id = n['id'] as String;
+        final modified = (n['modified_at'] as num?)?.toInt() ?? 0;
+        final deletedAt = (n['deleted_at'] as num?)?.toInt() ?? 0;
         final isDeleted = (n['is_deleted'] as num?)?.toInt() == 1;
         final String type;
         if (isDeleted) {
@@ -860,11 +943,16 @@ class SyncService {
         } else {
           type = 'added';
         }
+        final newContent = newContents[id];
         items.add(SyncChangeItem(
             id: id,
             path: _changePath(n),
             type: type,
-            size: contentLen[id] ?? 0));
+            size: newContent?.length ?? 0,
+            newContent: newContent,
+            newTime: isDeleted
+                ? (deletedAt > 0 ? deletedAt : modified)
+                : modified));
       }
     } catch (e) {
       print('[SYNC] 变更统计(push)异常: $e');
@@ -1124,6 +1212,7 @@ class SyncService {
       'sync_key': myKey,
       'sync_key_mismatch': clientKey.isNotEmpty && myKey.isNotEmpty && clientKey != myKey,
     };
+    await _ensurePendingLoaded();
     final pendingDeletes = List<String>.from(_pendingDeleteIds);
     if (pendingDeletes.isNotEmpty) {
       pullPayload['deleted_ids'] = pendingDeletes;
@@ -1132,6 +1221,7 @@ class SyncService {
     _sendJson(request.response, pullPayload);
     if (pendingDeletes.isNotEmpty) {
       _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
+      await _persistPendingDeletes();
     }
   }
 
@@ -1191,6 +1281,7 @@ class SyncService {
       'sync_key': myKey,
       'sync_key_mismatch': keyMismatch,
     };
+    await _ensurePendingLoaded();
     final pendingDeletes = List<String>.from(_pendingDeleteIds);
     if (pendingDeletes.isNotEmpty) {
       responsePayload['deleted_ids'] = pendingDeletes;
@@ -1199,6 +1290,7 @@ class SyncService {
     _sendJson(request.response, responsePayload);
     if (pendingDeletes.isNotEmpty) {
       _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
+      await _persistPendingDeletes();
     }
   }
 
