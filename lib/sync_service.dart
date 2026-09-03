@@ -455,13 +455,14 @@ class SyncService {
     );
   }
 
-  Future<Map<String, dynamic>> pullFrom(String host, int port) async {
+  Future<Map<String, dynamic>> pullFrom(String host, int port,
+      {int? since}) async {
     statusNotifier.value = SyncStatus.syncing;
     messageNotifier.value = '正在拉取变更...';
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 1);
     try {
-      final lastSync = await _getLastSyncTime();
+      final lastSync = since ?? await _getLastSyncTime();
       print('[PULL] 拉取 since=$lastSync');
       final request = await client.postUrl(
         Uri(scheme: 'http', host: host, port: port, path: '/sync/pull'),
@@ -499,13 +500,14 @@ class SyncService {
     }
   }
 
-  Future<Map<String, dynamic>> pushTo(String host, int port) async {
+  Future<Map<String, dynamic>> pushTo(String host, int port,
+      {int? since}) async {
     statusNotifier.value = SyncStatus.syncing;
     messageNotifier.value = '正在推送变更...';
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 1);
     try {
-      final lastSync = await _getLastSyncTime();
+      final lastSync = since ?? await _getLastSyncTime();
       final db = await DatabaseHelper.instance.database;
 
       final nodes = await db.query(
@@ -650,24 +652,26 @@ class SyncService {
         client.close();
       }
 
-      // Pull FIRST, then push.
+      // Capture the sync watermark ONCE at the start of this round.
       //
-      // Why: on a fresh install (last_sync_time = 0), pushTo() advances this
-      // device's last_sync_time to the remote "now" as soon as it finishes.
-      // If we pushed first, the subsequent pull would ask the remote for
-      // changes newer than "now" and receive nothing — so all notes that
-      // already exist on the remote would never arrive on this device and the
-      // app looks like it "cannot pair". Pulling first with last_sync = 0
-      // returns the remote's full history; the push afterwards then merges
-      // this device's own changes and advances last_sync_time only after both
-      // directions have been exchanged.
+      // Both directions query and send changes newer than this same
+      // watermark. Do NOT let the pull advance last_sync_time before the push
+      // runs (or vice versa), otherwise the second direction would only see
+      // changes newer than "now" and would skip everything that existed when
+      // the round started:
+      //   - a fresh install (watermark = 0) must pull the remote's full
+      //     history first, or its notes never arrive ("cannot pair");
+      //   - local changes made before this round must still be pushed, or
+      //     they silently never reach the other device.
+      final since = await _getLastSyncTime();
+      print('[SYNC] 本轮同步水位线 since=$since');
       try {
-        await pullFrom(host, port);
+        await pullFrom(host, port, since: since);
       } catch (e) {
         print('[SYNC] pull 失败: $e');
       }
       try {
-        await pushTo(host, port);
+        await pushTo(host, port, since: since);
       } catch (e) {
         print('[SYNC] push 失败: $e');
       }
