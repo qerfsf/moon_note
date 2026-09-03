@@ -665,15 +665,34 @@ class SyncService {
       //     they silently never reach the other device.
       final since = await _getLastSyncTime();
       print('[SYNC] 本轮同步水位线 since=$since');
+      bool pullOk = false;
+      bool pushOk = false;
       try {
         await pullFrom(host, port, since: since);
+        pullOk = true;
       } catch (e) {
         print('[SYNC] pull 失败: $e');
       }
       try {
         await pushTo(host, port, since: since);
+        pushOk = true;
       } catch (e) {
         print('[SYNC] push 失败: $e');
+      }
+
+      // Only keep the advanced watermark if BOTH directions succeeded.
+      // pullFrom/pushTo each move last_sync_time forward when they complete;
+      // if one direction failed, that watermark would silently skip every
+      // local/remote change made before this round ("stranded" changes that
+      // never sync again). Rolling back to `since` makes the next round
+      // re-exchange them — the merge is last-writer-wins by modified_at, so
+      // re-pulling/re-pushing the same rows is idempotent.
+      if (!(pullOk && pushOk)) {
+        final now = await _getLastSyncTime();
+        if (now > since) {
+          print('[SYNC] 本轮未完全成功，回滚水位线 $now -> $since');
+          await _setLastSyncTime(since);
+        }
       }
 
       // Download missing image files — non-critical, catch errors independently
