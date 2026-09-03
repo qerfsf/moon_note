@@ -13,6 +13,7 @@ import 'notification_service.dart';
 import 'sync_service.dart';
 import 'image_service.dart';
 import 'app_navigator.dart';
+import 'sync_change_sheet.dart';
 
 class _NoteSearchDelegate extends SearchDelegate<String> {
   final Map<String, List<Map<String, dynamic>>> _cache = {};
@@ -234,6 +235,7 @@ class _HomePageState extends State<HomePage> {
     _reminderTimer = Timer.periodic(const Duration(seconds: 15), (_) => _checkReminders());
     NotificationService.instance.onReminderFired = _onReminderFired;
     SyncService.instance.dataVersionNotifier.addListener(_onRemoteDataChanged);
+    SyncService.instance.roundResultNotifier.addListener(_onSyncRoundResult);
     // Check reminders when app resumes from background
     WidgetsBinding.instance.addObserver(_lifecycleObserver);
   }
@@ -251,6 +253,7 @@ class _HomePageState extends State<HomePage> {
     _reminderTimer?.cancel();
     WidgetsBinding.instance.removeObserver(_lifecycleObserver);
     SyncService.instance.dataVersionNotifier.removeListener(_onRemoteDataChanged);
+    SyncService.instance.roundResultNotifier.removeListener(_onSyncRoundResult);
     super.dispose();
   }
 
@@ -503,6 +506,33 @@ class _HomePageState extends State<HomePage> {
 
   void _onRemoteDataChanged() => _loadNodes();
 
+  DateTime? _lastChangeToastAt;
+
+  /// 同步完成且有变更 → 底部非阻塞提示,带"详情"入口。
+  void _onSyncRoundResult() {
+    final res = SyncService.instance.roundResultNotifier.value;
+    if (res == null || res.items.isEmpty || !mounted) return;
+    final now = DateTime.now();
+    // 防抖:3 秒内多轮变更只提示一次,避免连续弹窗
+    if (_lastChangeToastAt != null &&
+        now.difference(_lastChangeToastAt!) < const Duration(seconds: 3)) {
+      return;
+    }
+    _lastChangeToastAt = now;
+    final count = res.totalChanges;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(
+      content: Text('同步完成，$count 个文件已更新'),
+      duration: const Duration(seconds: 5),
+      behavior: SnackBarBehavior.floating,
+      action: SnackBarAction(
+        label: '详情',
+        onPressed: () => showSyncChangeSheet(context, res),
+      ),
+    ));
+  }
+
   Future<void> _trySync({bool showToast = true}) async {
     if (_isSyncing) {
       print('[SYNC] 跳过: 上一次同步仍在进行中');
@@ -539,14 +569,21 @@ class _HomePageState extends State<HomePage> {
         _syncFailCount = 0;
         await _loadNodes();
         print('[SYNC] 同步完成');
+        // 手动触发且本轮无变更(变更通知已由 _onSyncRoundResult 弹出)
         if (showToast && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('同步完成'),
-              duration: Duration(seconds: 1),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          final lastChange = _lastChangeToastAt;
+          final changedRecently = lastChange != null &&
+              DateTime.now().difference(lastChange) <
+                  const Duration(seconds: 2);
+          if (!changedRecently) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('同步完成'),
+                duration: Duration(seconds: 1),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
         }
       } else {
         _syncFailCount++;

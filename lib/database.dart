@@ -156,7 +156,7 @@ class DatabaseHelper {
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       await DatabaseHelper._migrateFromOldLocations();
     }
-    return await openDatabase(path, version: 11,
+    return await openDatabase(path, version: 12,
         onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
@@ -253,6 +253,7 @@ class DatabaseHelper {
 
     await _insertSystemFolders(db);
     await _insertDefaultSettings(db);
+    await _createSyncHistoryTable(db);
     await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id, is_deleted)');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_modified ON nodes(modified_at)');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type, is_deleted)');
@@ -345,6 +346,22 @@ class DatabaseHelper {
       await db.execute('CREATE INDEX IF NOT EXISTS idx_reminders_done_at ON reminders(is_done, remind_at)');
       await db.execute('CREATE INDEX IF NOT EXISTS idx_todos_done ON todos(is_done)');
     }
+    if (oldVersion < 12) {
+      await _createSyncHistoryTable(db);
+    }
+  }
+
+  Future _createSyncHistoryTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_history (
+        id TEXT PRIMARY KEY,
+        timestamp INTEGER NOT NULL,
+        total_changes INTEGER NOT NULL,
+        items_json TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_sync_history_ts ON sync_history(timestamp)');
   }
 
   Future _insertSystemFolders(Database db) async {

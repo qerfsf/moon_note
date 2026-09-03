@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'database.dart';
 import 'image_service.dart';
+import 'sync_change.dart';
 
 enum SyncStatus { idle, connecting, syncing, error }
 
@@ -23,6 +24,17 @@ class SyncService {
   final ValueNotifier<String> messageNotifier = ValueNotifier('');
   final ValueNotifier<int> lastSyncTimeNotifier = ValueNotifier(0);
   final ValueNotifier<int> dataVersionNotifier = ValueNotifier(0);
+
+  /// 最近一轮【有变更】的同步结果,供 UI 弹出通知与详情面板。
+  final ValueNotifier<SyncRoundResult?> roundResultNotifier =
+      ValueNotifier<SyncRoundResult?>(null);
+
+  /// 每完成一轮 fullSync 递增(无论有无变更)。
+  int _roundSeq = 0;
+  int get roundSeq => _roundSeq;
+
+  /// 本轮累计的变更项(在 fullSync 内使用)。
+  final List<SyncChangeItem> _roundItems = [];
 
   Process? _adbMonitorProcess;
   final _knownAdbDevices = <String>{};
@@ -480,6 +492,12 @@ class SyncService {
       }
       final body = await utf8.decodeStream(response);
       final data = jsonDecode(body) as Map<String, dynamic>;
+      final incoming = await _diffIncomingNodes(
+          data['nodes'] as List?, data['content'] as List?);
+      if (incoming.isNotEmpty) {
+        _roundItems.addAll(incoming);
+        print('[PULL] 收到 ${incoming.length} 项变更');
+      }
       final merged = await _mergeRemoteData(data);
       await _setLastSyncTime(data['server_time'] as int);
       print('[PULL] 完成: 合并 $merged 项');
@@ -574,6 +592,16 @@ class SyncService {
       }
       if (pendingDeletes.isNotEmpty) {
         _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
+      }
+      // 记录本轮变更明细:推送出去的本地变更 + 服务器回传的变更
+      try {
+        final sent = await _diffSentNodes(nodes, content, lastSync);
+        _roundItems.addAll(sent);
+        final incoming = await _diffIncomingNodes(
+            data['nodes'] as List?, data['content'] as List?);
+        _roundItems.addAll(incoming);
+      } catch (e) {
+        print('[PUSH] 变更明细统计失败: $e');
       }
       // Upload image files for newly pushed images
       if (images.isNotEmpty) {
@@ -708,15 +736,140 @@ class SyncService {
       if (saveConnection) {
         await saveLastConnection(host, port);
       }
+
+      // 汇总本轮变更:去重后落库,并通知 UI 弹出"同步完成"提示
+      _roundSeq++;
+      final byId = <String, SyncChangeItem>{};
+      for (final it in _roundItems) {
+        byId.putIfAbsent(it.id, () => it);
+      }
+      _roundItems.clear();
+      if (byId.isNotEmpty) {
+        final items = byId.values.toList();
+        final ts = DateTime.now().millisecondsSinceEpoch;
+        try {
+          await SyncHistoryStore.instance.addRound(ts, items);
+        } catch (e) {
+          print('[SYNC] 变更记录存储失败: $e');
+        }
+        print('[SYNC] 本轮变更 ${items.length} 项');
+        roundResultNotifier.value = SyncRoundResult(timestamp: ts, items: items);
+      }
+
       statusNotifier.value = SyncStatus.idle;
       print('[SYNC] fullSync 完成: $host:$port');
       return 1;
     } catch (e) {
+      _roundItems.clear();
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '连接失败: $e';
       print('[SYNC] fullSync 失败: $e');
       rethrow;
     }
+  }
+
+  String _changePath(Map row) {
+    final t = row['title'] as String?;
+    return (t == null || t.trim().isEmpty) ? '未命名' : t;
+  }
+
+  /// 对端发来的节点相对本地的变更分类(新增/修改/删除)。
+  /// 只统计会实际落地的项:本地不存在→新增;远端较新→修改;is_deleted=1→删除。
+  Future<List<SyncChangeItem>> _diffIncomingNodes(
+      List? rawNodes, List? rawContents) async {
+    final items = <SyncChangeItem>[];
+    if (rawNodes == null || rawNodes.isEmpty) return items;
+    try {
+      final nodes = rawNodes.cast<Map<String, dynamic>>();
+      final contents = (rawContents == null)
+          ? <Map<String, dynamic>>[]
+          : rawContents.cast<Map<String, dynamic>>();
+      final db = await DatabaseHelper.instance.database;
+      final ids = nodes.map((n) => n['id'] as String).toList();
+      Map<String, Map<String, dynamic>> localById = {};
+      if (ids.isNotEmpty) {
+        final placeholders = ids.map((_) => '?').join(',');
+        final rows = await db.rawQuery(
+            'SELECT id, modified_at FROM nodes WHERE id IN ($placeholders)',
+            ids);
+        localById = {for (final r in rows) r['id'] as String: r};
+      }
+      final contentLen = <String, int>{};
+      for (final c in contents) {
+        final s = c['content'] as String? ?? '';
+        contentLen[c['note_id'] as String] = s.length;
+      }
+      for (final n in nodes) {
+        final id = n['id'] as String;
+        final remoteModified = (n['modified_at'] as num?)?.toInt() ?? 0;
+        final isDeleted = (n['is_deleted'] as num?)?.toInt() == 1;
+        final local = localById[id];
+        final String type;
+        if (isDeleted) {
+          type = 'deleted';
+        } else if (local == null) {
+          type = 'added';
+        } else if (remoteModified > (local['modified_at'] as num).toInt()) {
+          type = 'modified';
+        } else {
+          continue;
+        }
+        items.add(SyncChangeItem(
+            id: id,
+            path: _changePath(n),
+            type: type,
+            size: contentLen[id] ?? 0));
+      }
+    } catch (e) {
+      print('[SYNC] 变更统计(pull)异常: $e');
+    }
+    return items;
+  }
+
+  /// 本轮推送出去的本地节点分类(删除/新增/修改)。
+  Future<List<SyncChangeItem>> _diffSentNodes(
+      List<dynamic> nodes, List<dynamic> contents, int since) async {
+    final items = <SyncChangeItem>[];
+    if (nodes.isEmpty) return items;
+    try {
+      final db = await DatabaseHelper.instance.database;
+      final ids = <String>[];
+      for (final e in nodes) {
+        ids.add((e as Map)['id'] as String);
+      }
+      final placeholders = ids.map((_) => '?').join(',');
+      final rows = await db.rawQuery(
+          'SELECT id FROM nodes WHERE modified_at <= ? AND id IN ($placeholders)',
+          [since, ...ids]);
+      final existing = {for (final r in rows) r['id'] as String};
+      final contentLen = <String, int>{};
+      for (final e in contents) {
+        final c = e as Map;
+        final s = c['content'] as String? ?? '';
+        contentLen[c['note_id'] as String] = s.length;
+      }
+      for (final e in nodes) {
+        final n = e as Map;
+        final id = n['id'] as String;
+        final isDeleted = (n['is_deleted'] as num?)?.toInt() == 1;
+        final String type;
+        if (isDeleted) {
+          type = 'deleted';
+        } else if (existing.contains(id)) {
+          type = 'modified';
+        } else {
+          type = 'added';
+        }
+        items.add(SyncChangeItem(
+            id: id,
+            path: _changePath(n),
+            type: type,
+            size: contentLen[id] ?? 0));
+      }
+    } catch (e) {
+      print('[SYNC] 变更统计(push)异常: $e');
+    }
+    return items;
   }
 
   Future<int> _mergeRemoteData(Map<String, dynamic> data) async {
