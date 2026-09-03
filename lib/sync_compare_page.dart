@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'sync_change.dart';
 
@@ -110,12 +111,27 @@ class SyncChangeComparePage extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
             child: Row(
               children: [
-                Expanded(child: _versionBox(cs, oldLabel, item.oldTime,
-                    isNewer: !newerIsNew && item.oldTime > 0,
-                    removed: true)),
+                Expanded(
+                    child: _versionBox(
+                  context,
+                  cs,
+                  oldLabel,
+                  item.oldTime,
+                  isNewer: !newerIsNew && item.oldTime > 0,
+                  removed: true,
+                  content: item.oldContent,
+                )),
                 const SizedBox(width: 8),
-                Expanded(child: _versionBox(cs, newLabel, item.newTime,
-                    isNewer: newerIsNew, removed: false)),
+                Expanded(
+                    child: _versionBox(
+                  context,
+                  cs,
+                  newLabel,
+                  item.newTime,
+                  isNewer: newerIsNew,
+                  removed: false,
+                  content: item.newContent,
+                )),
               ],
             ),
           ),
@@ -151,11 +167,15 @@ class SyncChangeComparePage extends StatelessWidget {
     );
   }
 
-  Widget _versionBox(ColorScheme cs, String label, int time,
-      {required bool isNewer, required bool removed}) {
+  Widget _versionBox(BuildContext context, ColorScheme cs, String label,
+      int time,
+      {required bool isNewer,
+      required bool removed,
+      String? content}) {
     final accent =
         removed ? const Color(0xFFC62828) : const Color(0xFF2E7D32);
     final timeText = _shortTime(time);
+    final hasContent = content != null && content.isNotEmpty;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
@@ -185,6 +205,26 @@ class SyncChangeComparePage extends StatelessWidget {
                   child: Text('较新 · 优先',
                       style: TextStyle(fontSize: 10, color: accent)),
                 ),
+              if (hasContent)
+                InkWell(
+                  onTap: () => _copyVersion(context, label, content),
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.copy_rounded,
+                            size: 13, color: cs.onSurfaceVariant),
+                        const SizedBox(width: 2),
+                        Text('复制',
+                            style: TextStyle(
+                                fontSize: 11,
+                                color: cs.onSurfaceVariant)),
+                      ],
+                    ),
+                  ),
+                ),
             ],
           ),
           if (time > 0) ...[
@@ -195,6 +235,19 @@ class SyncChangeComparePage extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// 复制某一版本的全部内容到剪贴板(只读页不提供版本回滚,避免混乱)。
+  Future<void> _copyVersion(
+      BuildContext context, String label, String content) async {
+    await Clipboard.setData(ClipboardData(text: content));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('已复制「$label」的全部内容'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
   }
 
   Widget _diffRow(BuildContext context, DiffLine l) {
