@@ -13,6 +13,7 @@ import 'notification_service.dart';
 import 'sync_service.dart';
 import 'image_service.dart';
 import 'app_navigator.dart';
+import 'sync_change.dart';
 import 'sync_change_sheet.dart';
 
 class _NoteSearchDelegate extends SearchDelegate<String> {
@@ -508,10 +509,71 @@ class _HomePageState extends State<HomePage> {
 
   DateTime? _lastChangeToastAt;
 
-  /// 同步完成且有变更 → 底部非阻塞提示,带"详情"入口。
+  /// 组装通知:返回(分类标签, 正文)。
+  /// 分类:文件同步 / 回收站同步 / 文件+回收站。
+  /// 正文按 冲突 → 文件变更 → 回收站变更 → 清理 组合,不写笼统的"同步成功"。
+  (String, String) _roundToastParts(SyncRoundResult res) {
+    final files = res.fileItems; // added/modified/conflict
+    final trash = res.trashItems; // 软删除(移入回收站)
+    final hard = res.hardDeletes; // 永久清理
+    final hasFile = files.isNotEmpty;
+    final hasTrash = trash.isNotEmpty || hard > 0;
+    final chip = hasFile && hasTrash
+        ? '文件+回收站'
+        : (hasTrash ? '回收站同步' : '文件同步');
+
+    final parts = <String>[];
+    if (res.hasConflict) {
+      final c = res.conflicts;
+      parts.add(c.length == 1
+          ? '「${c.first.path}」文件有差异，未能完成更新'
+          : '「${c.first.path}」等 ${c.length} 项有差异，未能完成更新');
+    } else if (files.isNotEmpty) {
+      if (files.length == 1) {
+        final it = files.first;
+        final verb = switch (it.type) {
+          'added' => '已新增',
+          _ => '已更新',
+        };
+        parts.add('「${it.path}」$verb');
+      } else {
+        parts.add('「${files.first.path}」等 ${files.length} 项已更新');
+      }
+    }
+    if (trash.isNotEmpty) {
+      parts.add(trash.length == 1
+          ? '「${trash.first.path}」已删除'
+          : '「${trash.first.path}」等 ${trash.length} 项已删除');
+    }
+    if (hard > 0) {
+      parts.add('回收站已清理 $hard 项');
+    }
+    var text = parts.join('；');
+    if (text.isEmpty) text = '同步完成'; // 理论不可达(调用方保证有内容)
+    return (chip, text);
+  }
+
+  Widget _toastChip(BuildContext context, String label) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: cs.secondaryContainer.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(label,
+          style: TextStyle(fontSize: 11, color: cs.onSecondaryContainer)),
+    );
+  }
+
+  /// 同步完成且有变更 → 底部非阻塞提示,带分类与"详情"入口。
   void _onSyncRoundResult() {
     final res = SyncService.instance.roundResultNotifier.value;
-    if (res == null || res.items.isEmpty || !mounted) return;
+    if (res == null ||
+        (res.items.isEmpty && res.hardDeletes == 0) ||
+        !mounted) {
+      return;
+    }
     final now = DateTime.now();
     // 防抖:3 秒内多轮变更只提示一次,避免连续弹窗
     if (_lastChangeToastAt != null &&
@@ -519,11 +581,21 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     _lastChangeToastAt = now;
-    final count = res.totalChanges;
+    final (chip, text) = _roundToastParts(res);
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(
-      content: Text('同步完成，$count 个文件已更新'),
+      content: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          _toastChip(context, chip),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(text,
+                maxLines: 2, overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
       duration: const Duration(seconds: 5),
       behavior: SnackBarBehavior.floating,
       action: SnackBarAction(
@@ -576,10 +648,11 @@ class _HomePageState extends State<HomePage> {
               DateTime.now().difference(lastChange) <
                   const Duration(seconds: 2);
           if (!changedRecently) {
+            // 本轮确实没有可同步的内容,说清楚而不是笼统的"同步成功"
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('同步完成'),
-                duration: Duration(seconds: 1),
+                content: Text('已是最新，没有可同步的内容'),
+                duration: Duration(seconds: 2),
                 behavior: SnackBarBehavior.floating,
               ),
             );

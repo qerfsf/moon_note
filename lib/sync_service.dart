@@ -36,6 +36,9 @@ class SyncService {
   /// 本轮累计的变更项(在 fullSync 内使用)。
   final List<SyncChangeItem> _roundItems = [];
 
+  /// 本轮涉及的回收站永久删除条数(发送 + 收到的 deleted_ids)。
+  int _roundHardDeletes = 0;
+
   Process? _adbMonitorProcess;
   final _knownAdbDevices = <String>{};
   bool _adbSyncLock = false;
@@ -546,6 +549,11 @@ class SyncService {
         _roundItems.addAll(incoming);
         print('[PULL] 收到 ${incoming.length} 项变更');
       }
+      final recvDel = data['deleted_ids'] as List?;
+      if (recvDel != null && recvDel.isNotEmpty) {
+        _roundHardDeletes += recvDel.length;
+        print('[PULL] 对端清理回收站 ${recvDel.length} 项');
+      }
       final merged = await _mergeRemoteData(data);
       await _setLastSyncTime(data['server_time'] as int);
       print('[PULL] 完成: 合并 $merged 项');
@@ -645,6 +653,13 @@ class SyncService {
       }
       // 记录本轮变更明细:推送出去的本地变更 + 服务器回传的变更
       try {
+        if (pendingDeletes.isNotEmpty) {
+          _roundHardDeletes += pendingDeletes.length; // 本端清理回收站并发出
+        }
+        final recvDel = data['deleted_ids'] as List?;
+        if (recvDel != null && recvDel.isNotEmpty) {
+          _roundHardDeletes += recvDel.length; // 对端清理,本端执行删除
+        }
         final sent = await _diffSentNodes(nodes, content, lastSync);
         _roundItems.addAll(sent);
         final incoming = await _diffIncomingNodes(
@@ -787,23 +802,28 @@ class SyncService {
         await saveLastConnection(host, port);
       }
 
-      // 汇总本轮变更:去重后落库,并通知 UI 弹出"同步完成"提示
+      // 汇总本轮变更:去重后落库,并通知 UI 弹出提示
       _roundSeq++;
       final byId = <String, SyncChangeItem>{};
       for (final it in _roundItems) {
         byId.putIfAbsent(it.id, () => it);
       }
       _roundItems.clear();
-      if (byId.isNotEmpty) {
+      final hardDeletes = _roundHardDeletes;
+      _roundHardDeletes = 0;
+      if (byId.isNotEmpty || hardDeletes > 0) {
         final items = byId.values.toList();
         final ts = DateTime.now().millisecondsSinceEpoch;
-        try {
-          await SyncHistoryStore.instance.addRound(ts, items);
-        } catch (e) {
-          print('[SYNC] 变更记录存储失败: $e');
+        if (items.isNotEmpty) {
+          try {
+            await SyncHistoryStore.instance.addRound(ts, items);
+          } catch (e) {
+            print('[SYNC] 变更记录存储失败: $e');
+          }
         }
-        print('[SYNC] 本轮变更 ${items.length} 项');
-        roundResultNotifier.value = SyncRoundResult(timestamp: ts, items: items);
+        print('[SYNC] 本轮变更 ${items.length} 项, 回收站清理 $hardDeletes 项');
+        roundResultNotifier.value = SyncRoundResult(
+            timestamp: ts, items: items, hardDeletes: hardDeletes);
       }
 
       statusNotifier.value = SyncStatus.idle;
@@ -811,6 +831,7 @@ class SyncService {
       return 1;
     } catch (e) {
       _roundItems.clear();
+      _roundHardDeletes = 0;
       statusNotifier.value = SyncStatus.error;
       messageNotifier.value = '连接失败: $e';
       print('[SYNC] fullSync 失败: $e');

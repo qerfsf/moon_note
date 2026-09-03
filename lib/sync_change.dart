@@ -89,11 +89,26 @@ class SyncRoundResult {
   final int timestamp;
   final List<SyncChangeItem> items;
 
-  const SyncRoundResult({required this.timestamp, required this.items});
+  /// 本轮清理回收站的永久删除条数(清空回收站/永久删除,经 deleted_ids 传播)。
+  final int hardDeletes;
+
+  const SyncRoundResult(
+      {required this.timestamp, required this.items, this.hardDeletes = 0});
 
   int get totalChanges => items.length;
 
-  /// 存在并发编辑等"有差异"项(本地与远端同改,未能干净合并)。
+  /// 文件(笔记/文件夹)变更:新增/修改/冲突。
+  List<SyncChangeItem> get fileItems =>
+      items.where((e) => e.type != 'deleted').toList();
+
+  /// 回收站相关:软删除(移入回收站)条目。
+  List<SyncChangeItem> get trashItems =>
+      items.where((e) => e.type == 'deleted').toList();
+
+  /// 是否涉及回收站(软删除 + 永久清理)。
+  bool get hasTrashOps => trashItems.isNotEmpty || hardDeletes > 0;
+
+  /// 是否存在并发编辑等"有差异"项(本地与远端同改,未能干净合并)。
   bool get hasConflict => items.any((e) => e.type == 'conflict');
 
   List<SyncChangeItem> get conflicts =>
