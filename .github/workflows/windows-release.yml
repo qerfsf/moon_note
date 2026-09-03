@@ -1,0 +1,80 @@
+name: Windows Release Build
+
+# 自动构建 Windows 版并打包完整 Release 目录(含 DLL / data / sqlite3)。
+# 触发方式:
+#   1. 推送形如 v3.1.0 的 tag
+#   2. 或在 Actions 页手动 "Run workflow" 并填 tag(不填则用当前分支)
+# 产物: moon_note-windows-x64.zip —— 解压后双击 moon_note.exe 即可运行,
+#        无需安装 Flutter / SQLite。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. v3.1.0 (留空则用当前 ref 名)'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter 3.32.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.1'
+          channel: 'stable'
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Verify release folder is complete
+        shell: pwsh
+        run: |
+          $rel = 'build/windows/x64/runner/Release'
+          $required = @('moon_note.exe','flutter_windows.dll','sqlite3.dll','data/app.so','data/icudtl.dat')
+          foreach ($f in $required) {
+            if (-not (Test-Path (Join-Path $rel $f))) {
+              Write-Error "Missing required file: $f"
+              exit 1
+            }
+          }
+          Write-Host 'Release folder OK: exe + DLL + data + sqlite3 all present'
+
+      - name: Package zip (complete Release folder)
+        shell: pwsh
+        run: |
+          $rel = 'build/windows/x64/runner/Release'
+          Compress-Archive -Path "$rel/*" -DestinationPath 'moon_note-windows-x64.zip' -CompressionLevel Optimal
+          Write-Host "zip size: $((Get-Item 'moon_note-windows-x64.zip').Length / 1MB) MB"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = $env:GITHUB_REF_NAME }
+          Write-Host "target tag: $tag"
+          # 检查 release 是否存在
+          gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag moon_note-windows-x64.zip `
+              --title "Moon Note $tag" `
+              --notes-file RELEASE_NOTES.md
+            Write-Host "created release $tag"
+          } else {
+            gh release upload $tag moon_note-windows-x64.zip --clobber
+            Write-Host "uploaded zip to existing release $tag"
+            # 顺带修正/更新发布说明(修复历史乱码)
+            gh release edit $tag --notes-file RELEASE_NOTES.md
+          }
