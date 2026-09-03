@@ -8,6 +8,7 @@ import 'backup_service.dart';
 import 'recycle_bin_page.dart';
 import 'about_page.dart';
 import 'sync_page.dart';
+import 'sync_history_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -309,6 +310,12 @@ class _SettingsPageState extends State<SettingsPage> {
               onTap: () {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const SyncPage()));
+              }),
+          _tile(cs, Icons.history, '同步历史',
+              subtitle: '查看历次同步的变更记录',
+              onTap: () {
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SyncHistoryPage()));
               }),
           const Divider(height: 1),
           const SizedBox(height: 8),

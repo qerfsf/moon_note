@@ -72,65 +72,70 @@ Future<void> showSyncChangeSheet(
             child: ListView.builder(
               padding: const EdgeInsets.only(bottom: 16),
               itemCount: result.items.length,
-              itemBuilder: (context, i) {
-                final item = result.items[i];
-                final color = _typeColor(cs, item.type);
-                return InkWell(
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => SyncChangeViewPage(item: item)),
-                  ),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 20, vertical: 10),
-                    decoration: BoxDecoration(
-                      border: Border(
-                          bottom: BorderSide(
-                              color: cs.outlineVariant, width: 0.5)),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 46,
-                          alignment: Alignment.center,
-                          padding: const EdgeInsets.symmetric(vertical: 3),
-                          decoration: BoxDecoration(
-                            color: color.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(5),
-                          ),
-                          child: Text(item.typeLabel,
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  color: color,
-                                  fontWeight: FontWeight.w600)),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(item.path,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                  fontSize: 14, color: cs.onSurface)),
-                        ),
-                        if (item.size > 0)
-                          Text('${item.size} 字',
-                              style:
-                                  TextStyle(fontSize: 11, color: cs.outline)),
-                        const SizedBox(width: 4),
-                        Icon(Icons.chevron_right,
-                            size: 16, color: cs.outlineVariant),
-                      ],
-                    ),
-                  ),
-                );
-              },
+              itemBuilder: (context, i) =>
+                  SyncChangeItemTile(item: result.items[i]),
             ),
           ),
         ],
       ),
     ),
   );
+}
+
+/// 变更条目行(详情面板与历史页共用)。点击打开该笔记当前内容的只读查看页。
+class SyncChangeItemTile extends StatelessWidget {
+  final SyncChangeItem item;
+
+  const SyncChangeItemTile({super.key, required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final color = _typeColor(cs, item.type);
+    return InkWell(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => SyncChangeViewPage(item: item)),
+      ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border(
+              bottom: BorderSide(color: cs.outlineVariant, width: 0.5)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 46,
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: Text(item.typeLabel,
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: color,
+                      fontWeight: FontWeight.w600)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(item.path,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 14, color: cs.onSurface)),
+            ),
+            if (item.size > 0)
+              Text('${item.size} 字',
+                  style: TextStyle(fontSize: 11, color: cs.outline)),
+            const SizedBox(width: 4),
+            Icon(Icons.chevron_right, size: 16, color: cs.outlineVariant),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// 点击变更项后打开当前内容的只读查看页。
