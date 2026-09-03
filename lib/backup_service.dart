@@ -22,7 +22,7 @@ class BackupService {
     final db = await DatabaseHelper.instance.database;
     final data = <String, dynamic>{
       'version': 1,
-      'app_version': '3.0.0',
+      'app_version': '3.2.0',
       'exported_at': DateTime.now().toIso8601String(),
       'tables': <String, dynamic>{},
     };

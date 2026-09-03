@@ -378,7 +378,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     MaterialPageRoute(builder: (_) => const RecycleBinPage()));
               }),
           _tile(cs, Icons.info_outline, '关于 Moon Note',
-              subtitle: '版本 3.0.0',
+              subtitle: '版本 3.2.0',
               onTap: () {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const AboutPage()));

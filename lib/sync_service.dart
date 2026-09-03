@@ -1178,7 +1178,7 @@ class SyncService {
     String getSetting(String key) =>
         settings.where((r) => r['key'] == key).firstOrNull?['value'] as String? ?? '';
     _sendJson(request.response, {
-      'version': '3.0.0',
+      'version': '3.2.0',
       'device': Platform.localHostname,
       'sync_key': getSetting('sync_key'),
       'device_name': getSetting('device_name'),

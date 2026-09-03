@@ -1,4 +1,4 @@
-# Moon Note Windows 版
+﻿# Moon Note v3.2.0 (Windows x64)
 
 简洁的本地优先笔记应用,支持 Markdown 编辑/预览、待办、提醒、回收站、局域网/USB 双向同步与同步变更记录。
 
@@ -37,3 +37,4 @@
 
 - Windows 10 / 11 x64
 - 无需安装 Flutter SDK、无需单独安装 SQLite
+
