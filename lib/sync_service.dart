@@ -632,6 +632,11 @@ class SyncService {
         payload['deleted_ids'] = pendingDeletes;
         print('[PUSH] 包含 ${pendingDeletes.length} 个永久删除 ID');
       }
+      final pendingImageDeletes = await ImageService.pendingImageDeletes();
+      if (pendingImageDeletes.isNotEmpty) {
+        payload['deleted_image_ids'] = pendingImageDeletes;
+        print('[PUSH] 包含 ${pendingImageDeletes.length} 个图片删除');
+      }
       request.write(jsonEncode(payload));
       final response = await request.close().timeout(
             const Duration(seconds: 10),
@@ -650,6 +655,10 @@ class SyncService {
       if (pendingDeletes.isNotEmpty) {
         _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
         await _persistPendingDeletes();
+      }
+      if (pendingImageDeletes.isNotEmpty) {
+        // 已成功送达,清空待传播的图片删除
+        await ImageService.clearPendingImageDeletes();
       }
       // 记录本轮变更明细:推送出去的本地变更 + 服务器回传的变更
       try {
@@ -995,6 +1004,19 @@ class SyncService {
       merged += deletedIds.length;
     }
 
+    // 图片删除传播:让两端图片记录保持一致
+    if (data['deleted_image_ids'] != null &&
+        (data['deleted_image_ids'] as List).isNotEmpty) {
+      final deletedImageIds = data['deleted_image_ids'] as List;
+      print('[SYNC] 处理 ${deletedImageIds.length} 个图片删除');
+      for (final id in deletedImageIds) {
+        if (id is String && id.isNotEmpty) {
+          await ImageService.instance.applyRemoteDelete(id);
+          merged++;
+        }
+      }
+    }
+
     if (data['nodes'] != null && (data['nodes'] as List).isNotEmpty) {
       final nodes = data['nodes'] as List;
       // Batch load existing nodes
@@ -1132,6 +1154,12 @@ class SyncService {
         case '/sync/status':
           await _handleStatus(request);
           break;
+        case '/sync/summary':
+          await _handleSummary(request);
+          break;
+        case '/sync/manifest':
+          await _handleManifest(request);
+          break;
         case '/sync/pull':
           _maybeSaveRemoteHost(request);
           await _handlePull(request);
@@ -1239,10 +1267,18 @@ class SyncService {
       pullPayload['deleted_ids'] = pendingDeletes;
       print('[SERVER] 拉取响应包含 ${pendingDeletes.length} 个永久删除 ID');
     }
+    final pendingImageDeletes = await ImageService.pendingImageDeletes();
+    if (pendingImageDeletes.isNotEmpty) {
+      pullPayload['deleted_image_ids'] = pendingImageDeletes;
+      print('[SERVER] 拉取响应包含 ${pendingImageDeletes.length} 个图片删除');
+    }
     _sendJson(request.response, pullPayload);
     if (pendingDeletes.isNotEmpty) {
       _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
       await _persistPendingDeletes();
+    }
+    if (pendingImageDeletes.isNotEmpty) {
+      await ImageService.clearPendingImageDeletes();
     }
   }
 
@@ -1308,10 +1344,18 @@ class SyncService {
       responsePayload['deleted_ids'] = pendingDeletes;
       print('[SERVER] 响应包含 ${pendingDeletes.length} 个永久删除 ID');
     }
+    final pendingImageDeletes = await ImageService.pendingImageDeletes();
+    if (pendingImageDeletes.isNotEmpty) {
+      responsePayload['deleted_image_ids'] = pendingImageDeletes;
+      print('[SERVER] 响应包含 ${pendingImageDeletes.length} 个图片删除');
+    }
     _sendJson(request.response, responsePayload);
     if (pendingDeletes.isNotEmpty) {
       _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
       await _persistPendingDeletes();
+    }
+    if (pendingImageDeletes.isNotEmpty) {
+      await ImageService.clearPendingImageDeletes();
     }
   }
 
@@ -1321,6 +1365,238 @@ class SyncService {
     response.headers.contentType = ContentType.json;
     response.write(jsonEncode(data));
     response.close();
+  }
+
+  // ── 一致性检查 ─────────────────────────────────────────────
+  // 思路:先比对"计数 + 指纹"(本地 O(n) 计算,一次请求完成),
+  // 指纹一致即认为两端每个笔记/文件夹/回收站条目/正文/图片完全一致;
+  // 只有指纹不同时才拉取清单(manifest)定位到具体差异项,
+  // 从而避免每次都逐文件比较。
+
+  int _fnv1a32(String s) {
+    var hash = 0x811c9dc5;
+    for (final unit in s.codeUnits) {
+      hash ^= unit & 0xff;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+      hash ^= (unit >> 8) & 0xff;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    return hash;
+  }
+
+  String _hex(int v) => v.toRadixString(16).padLeft(8, '0');
+
+  /// 本机数据摘要:计数 + 三类指纹 + 水位线 + 最近同步变更记录。
+  Future<Map<String, dynamic>> buildLocalSummary() async {
+    final db = await DatabaseHelper.instance.database;
+
+    final nodes = await db.rawQuery(
+        'SELECT id, type, title, parent_id, is_deleted, deleted_at, modified_at, sort_order, is_pinned, created_at FROM nodes ORDER BY id');
+    final nodeBuf = StringBuffer();
+    int activeNotes = 0, folders = 0, deleted = 0;
+    for (final r in nodes) {
+      nodeBuf.writeln([
+        r['id'],
+        r['title'],
+        r['parent_id'],
+        r['is_deleted'],
+        r['deleted_at'],
+        r['modified_at'],
+        r['sort_order'],
+        r['is_pinned'],
+        r['created_at'],
+      ].join('|'));
+      final isDel = (r['is_deleted'] as num?)?.toInt() == 1;
+      if (isDel) {
+        deleted++;
+      } else if (r['type'] == 'folder') {
+        folders++;
+      } else {
+        activeNotes++;
+      }
+    }
+
+    final contents = await db.rawQuery(
+        'SELECT note_id, content, modified_at FROM note_content ORDER BY note_id');
+    final contentBuf = StringBuffer();
+    for (final r in contents) {
+      contentBuf.writeln('${r['note_id']}|${r['modified_at']}|${r['content']}');
+    }
+
+    final images = await db.rawQuery(
+        'SELECT id, note_id, filename, file_size, modified_at FROM note_images ORDER BY id');
+    final imageBuf = StringBuffer();
+    for (final r in images) {
+      imageBuf.writeln(
+          '${r['id']}|${r['note_id']}|${r['filename']}|${r['file_size']}|${r['modified_at']}');
+    }
+
+    final watermark = await _getLastSyncTime();
+
+    // 最近几轮同步变更记录(修改记录区),用于快速追溯最近改了什么
+    final recent = <Map<String, dynamic>>[];
+    try {
+      final rows =
+          await db.query('sync_history', orderBy: 'timestamp DESC', limit: 5);
+      for (final r in rows) {
+        final items = (jsonDecode(r['items_json'] as String) as List)
+            .map((e) => e as Map)
+            .map((e) => {'id': e['id'], 'type': e['type'], 'path': e['path']})
+            .toList();
+        recent.add({
+          'timestamp': r['timestamp'],
+          'total': r['total_changes'],
+          'items': items,
+        });
+      }
+    } catch (_) {}
+
+    return {
+      'version': '3.2.0',
+      'device': Platform.localHostname,
+      'sync_key': await _getSyncKey(),
+      'watermark': watermark,
+      'counts': {
+        'nodes': nodes.length,
+        'notes': activeNotes,
+        'folders': folders,
+        'recycle_bin': deleted,
+        'content': contents.length,
+        'images': images.length,
+      },
+      'fp_nodes': _hex(_fnv1a32(nodeBuf.toString())),
+      'fp_content': _hex(_fnv1a32(contentBuf.toString())),
+      'fp_images': _hex(_fnv1a32(imageBuf.toString())),
+      'recent_changes': recent,
+    };
+  }
+
+  /// 差异清单:所有条目的 id/时间戳/删除标记,仅在指纹不一致时拉取。
+  Future<Map<String, dynamic>> buildLocalManifest() async {
+    final db = await DatabaseHelper.instance.database;
+    final nodes = await db.rawQuery(
+        'SELECT id, title, is_deleted, modified_at FROM nodes ORDER BY id');
+    final contents = await db.rawQuery(
+        'SELECT note_id, length(content) AS len, modified_at FROM note_content ORDER BY note_id');
+    final images = await db.rawQuery(
+        'SELECT id, note_id, filename, modified_at FROM note_images ORDER BY id');
+    return {
+      'device': Platform.localHostname,
+      'nodes': nodes
+          .map((r) =>
+              '${r['id']}|${r['modified_at']}|${r['is_deleted']}|${r['title']}')
+          .toList(),
+      'content': contents
+          .map((r) => '${r['note_id']}|${r['modified_at']}|${r['len']}')
+          .toList(),
+      'images': images
+          .map((r) => '${r['id']}|${r['modified_at']}|${r['filename']}')
+          .toList(),
+    };
+  }
+
+  Future<void> _handleSummary(HttpRequest request) async {
+    final summary = await buildLocalSummary();
+    _sendJson(request.response, summary);
+  }
+
+  Future<void> _handleManifest(HttpRequest request) async {
+    final manifest = await buildLocalManifest();
+    _sendJson(request.response, manifest);
+  }
+
+  /// 与对端通信的目标:优先 USB(adb 端口转发),否则用上次保存的 WiFi 地址。
+  Future<bool> _withRemoteTarget(
+      Future<bool> Function(String host, int port) action) async {
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      try {
+        final devices = await getAdbDevices();
+        if (devices.isNotEmpty) {
+          await removeAdbForward(localPort: 9091);
+          final ok = await setupAdbForward(localPort: 9091, remotePort: 9090);
+          if (ok) {
+            try {
+              return await action('127.0.0.1', 9091);
+            } finally {
+              await removeAdbForward(localPort: 9091);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    try {
+      final info = await getLastConnection();
+      final host = info['host'];
+      final port = int.tryParse(info['port'] ?? '') ?? 9090;
+      if (host != null && host.isNotEmpty) {
+        return await action(host, port);
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// 拉取对端摘要;失败返回 null(例如对端版本较旧没有该接口)。
+  Future<Map<String, dynamic>?> fetchRemoteSummary() async {
+    Map<String, dynamic>? result;
+    await _withRemoteTarget((host, port) async {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+      try {
+        final req = await client.getUrl(
+            Uri(scheme: 'http', host: host, port: port, path: '/sync/summary'));
+        final res = await req.close().timeout(const Duration(seconds: 10));
+        if (res.statusCode != 200) return false;
+        final body = await utf8.decodeStream(res);
+        result = jsonDecode(body) as Map<String, dynamic>;
+        return true;
+      } catch (e) {
+        print('[VERIFY] 获取对端摘要失败: $e');
+        return false;
+      } finally {
+        client.close();
+      }
+    });
+    return result;
+  }
+
+  /// 拉取对端差异清单;失败返回 null。
+  Future<Map<String, dynamic>?> fetchRemoteManifest() async {
+    Map<String, dynamic>? result;
+    await _withRemoteTarget((host, port) async {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+      try {
+        final req = await client.getUrl(
+            Uri(scheme: 'http', host: host, port: port, path: '/sync/manifest'));
+        final res = await req.close().timeout(const Duration(seconds: 20));
+        if (res.statusCode != 200) return false;
+        final body = await utf8.decodeStream(res);
+        result = jsonDecode(body) as Map<String, dynamic>;
+        return true;
+      } catch (e) {
+        print('[VERIFY] 获取对端清单失败: $e');
+        return false;
+      } finally {
+        client.close();
+      }
+    });
+    return result;
+  }
+
+  /// 用同一目标(USB 或 WiFi)执行一次完整同步,供"一致性检查"页使用。
+  Future<bool> syncWithRemote() async {
+    var ok = false;
+    await _withRemoteTarget((host, port) async {
+      try {
+        await fullSync(host, port);
+        ok = true;
+        return true;
+      } catch (e) {
+        print('[VERIFY] 同步失败: $e');
+        return false;
+      }
+    });
+    return ok;
   }
 
   Future<void> _handleImageDownload(HttpRequest request, String imageId) async {

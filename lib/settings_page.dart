@@ -9,6 +9,7 @@ import 'recycle_bin_page.dart';
 import 'about_page.dart';
 import 'sync_page.dart';
 import 'sync_history_page.dart';
+import 'sync_verify_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -316,6 +317,12 @@ class _SettingsPageState extends State<SettingsPage> {
               onTap: () {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const SyncHistoryPage()));
+              }),
+          _tile(cs, Icons.fact_check_outlined, '一致性检查',
+              subtitle: '核对两端笔记/文件夹/回收站是否完全一致',
+              onTap: () {
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SyncVerifyPage()));
               }),
           const Divider(height: 1),
           const SizedBox(height: 8),

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
@@ -158,6 +159,63 @@ class ImageService {
 
   /// Delete a single image (file + DB record).
   Future<void> deleteImage(String imageId) async {
+    final path = await getImagePath(imageId);
+    if (path != null) {
+      try {
+        await File(path).delete();
+      } catch (_) {}
+    }
+    final db = await DatabaseHelper.instance.database;
+    await db.delete('note_images', where: 'id = ?', whereArgs: [imageId]);
+    // 记录待传播的删除,让对端也删掉(否则两端图片记录会不一致)
+    await _queuePendingDelete(imageId);
+  }
+
+  // ── 图片删除的跨设备传播 ───────────────────────────────────
+  static const _pendingDeletesKey = 'pending_image_deletes_json';
+
+  static Future<List<String>> _readPendingDeletes() async {
+    try {
+      final db = await DatabaseHelper.instance.database;
+      final rows = await db.query('app_settings',
+          where: 'key = ?', whereArgs: [_pendingDeletesKey]);
+      if (rows.isEmpty) return [];
+      final raw = rows.first['value'] as String;
+      if (raw.isEmpty || raw == '[]') return [];
+      return (jsonDecode(raw) as List)
+          .whereType<String>()
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> _writePendingDeletes(List<String> ids) async {
+    try {
+      final db = await DatabaseHelper.instance.database;
+      await db.rawInsert(
+        'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+        [_pendingDeletesKey, jsonEncode(ids)],
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> _queuePendingDelete(String imageId) async {
+    final list = await _readPendingDeletes();
+    if (!list.contains(imageId)) {
+      list.add(imageId);
+      await _writePendingDeletes(list);
+    }
+  }
+
+  /// 待传播的图片删除 id 列表(同步时带上)。
+  static Future<List<String>> pendingImageDeletes() => _readPendingDeletes();
+
+  /// 发送成功后清空待传播列表。
+  static Future<void> clearPendingImageDeletes() => _writePendingDeletes([]);
+
+  /// 应用对端传来的图片删除:删除本地文件与记录。
+  Future<void> applyRemoteDelete(String imageId) async {
     final path = await getImagePath(imageId);
     if (path != null) {
       try {
