@@ -827,6 +827,7 @@ class _NotePageState extends State<NotePage> {
                   case 'checklist': _insertMarkdown('- [ ] ', ''); break;
                   case 'search': _openFind(); break;
                   case 'copylink': _copyLink(); break;
+                  case 'export_md': _exportMarkdownWithImages(); break;
                   case 'toggle_images':
                     setState(() => _showImages = !_showImages);
                     _saveImageSetting();
@@ -840,6 +841,7 @@ class _NotePageState extends State<NotePage> {
                 _popupItem(Icons.strikethrough_s, '删除线', 'strike'),
                 _popupItem(Icons.checklist, '待办清单', 'checklist'),
                 _popupItem(Icons.search, '查找替换', 'search'),
+                _popupItem(Icons.ios_share, '导出 Markdown(含图片)', 'export_md'),
                 const PopupMenuDivider(height: 1),
                 _popupItem(
                   _showImages ? Icons.visibility_off_outlined : Icons.image_outlined,
@@ -854,6 +856,236 @@ class _NotePageState extends State<NotePage> {
         ),
       ),
     );
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      duration: const Duration(seconds: 3),
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  bool _looksLikeLocalPath(String p) {
+    if (p.isEmpty) return false;
+    return RegExp(r'^[A-Za-z]:[\\/]').hasMatch(p) || p.startsWith('/');
+  }
+
+  /// 紧凑占位(隐藏图片模式 / 图片文件缺失)
+  Widget _imageChip(String? alt, bool exists, String? imageId, String? path) {
+    final chip = Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border.all(color: _borderLight),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(exists ? Icons.image_outlined : Icons.broken_image_outlined,
+              size: 16, color: _textTertiary),
+          const SizedBox(width: 6),
+          Text(
+            (alt != null && alt.isNotEmpty) ? alt : '图片',
+            style: TextStyle(fontSize: 13, color: _textTertiary),
+          ),
+        ],
+      ),
+    );
+    if (path == null) return chip;
+    return GestureDetector(
+      onTap: () => _showImageMenu(imageId: imageId, path: path),
+      child: chip,
+    );
+  }
+
+  /// 可点击的图片(点击弹出操作菜单)
+  Widget _tappableImage(
+      {String? imageId, required String path, String? alt}) {
+    return GestureDetector(
+      onTap: () => _showImageMenu(imageId: imageId, path: path),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 320),
+            child: Image.file(
+              File(path),
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) => Container(
+                height: 80,
+                color: _borderLight.withAlpha(80),
+                child: Center(
+                  child: Icon(Icons.broken_image_outlined,
+                      size: 24, color: _textTertiary),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 图片操作菜单:打开文件夹 / 系统程序打开 / 另存为 / 复制路径
+  void _showImageMenu({String? imageId, required String path}) {
+    final cs = Theme.of(context).colorScheme;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: cs.surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 6),
+            ListTile(
+              dense: true,
+              leading: Icon(Icons.folder_open_outlined,
+                  size: 20, color: cs.onSurfaceVariant),
+              title: Text('打开所在文件夹',
+                  style: TextStyle(fontSize: 15, color: cs.onSurface)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _revealInFileManager(path);
+              },
+            ),
+            ListTile(
+              dense: true,
+              leading: Icon(Icons.open_in_new,
+                  size: 20, color: cs.onSurfaceVariant),
+              title: Text('用系统程序打开',
+                  style: TextStyle(fontSize: 15, color: cs.onSurface)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _openWithSystem(path);
+              },
+            ),
+            ListTile(
+              dense: true,
+              leading: Icon(Icons.save_alt,
+                  size: 20, color: cs.onSurfaceVariant),
+              title: Text('另存为…',
+                  style: TextStyle(fontSize: 15, color: cs.onSurface)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _saveImageAs(imageId, path);
+              },
+            ),
+            ListTile(
+              dense: true,
+              leading: Icon(Icons.content_copy,
+                  size: 20, color: cs.onSurfaceVariant),
+              title: Text('复制文件路径',
+                  style: TextStyle(fontSize: 15, color: cs.onSurface)),
+              onTap: () {
+                Navigator.pop(ctx);
+                Clipboard.setData(ClipboardData(text: path));
+                _toast('已复制路径');
+              },
+            ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _revealInFileManager(String path) async {
+    try {
+      if (Platform.isWindows) {
+        await Process.run(
+            'explorer.exe', ['/select,${path.replaceAll('/', '\\')}']);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', ['-R', path]);
+      } else {
+        await Process.run('xdg-open', [File(path).parent.path]);
+      }
+    } catch (e) {
+      _toast('打开文件夹失败: $e');
+    }
+  }
+
+  Future<void> _openWithSystem(String path) async {
+    try {
+      if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', '', path]);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', [path]);
+      } else {
+        await Process.run('xdg-open', [path]);
+      }
+    } catch (e) {
+      _toast('打开失败: $e');
+    }
+  }
+
+  Future<void> _saveImageAs(String? imageId, String path) async {
+    try {
+      final suggested = path.split(Platform.pathSeparator).last;
+      final dest = await FilePicker.platform.saveFile(
+        dialogTitle: '保存图片',
+        fileName: suggested,
+      );
+      if (dest == null) return;
+      if (imageId != null) {
+        final ok = await ImageService.instance.copyImageTo(imageId, dest);
+        if (!ok) {
+          _toast('图片文件不存在');
+          return;
+        }
+      } else {
+        await File(path).copy(dest);
+      }
+      _toast('已保存到 $dest');
+    } catch (e) {
+      _toast('保存失败: $e');
+    }
+  }
+
+  /// 导出笔记为 Markdown 文件 + images 目录(图片链接改为标准相对路径,
+  /// 便于用 Typora / VSCode / Obsidian 等电脑软件直接查看图片)。
+  Future<void> _exportMarkdownWithImages() async {
+    try {
+      final dir = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: '选择导出文件夹',
+      );
+      if (dir == null) return;
+
+      final rawTitle = _titleController.text.trim();
+      final title = rawTitle.isEmpty ? '未命名' : rawTitle;
+      final safeTitle = ImageService.sanitizeFileName(title);
+      final outDir = Directory('$dir${Platform.pathSeparator}$safeTitle');
+      final imgDir = Directory('${outDir.path}${Platform.pathSeparator}images');
+      await imgDir.create(recursive: true);
+
+      var content = _contentController.text;
+      final images = await ImageService.instance.getImagesForNote(widget.noteId);
+      var copied = 0;
+      for (final img in images) {
+        final id = img['id'] as String;
+        final filename = img['filename'] as String;
+        if (!content.contains('moonimage:$id')) continue;
+        final src = await ImageService.instance.getImagePath(id);
+        if (src != null) {
+          await File(src)
+              .copy('${imgDir.path}${Platform.pathSeparator}$filename');
+          copied++;
+        }
+        // 应用内引用 -> 标准相对路径
+        content = content.replaceAll('moonimage:$id', 'images/$filename');
+      }
+
+      final mdPath = '${outDir.path}${Platform.pathSeparator}$safeTitle.md';
+      await File(mdPath).writeAsString('# $title\n\n$content\n', flush: true);
+      _toast('已导出到 $outDir(含 $copied 张图片)');
+    } catch (e) {
+      _toast('导出失败: $e');
+    }
   }
 
   Widget _buildEditorBody() {
@@ -1091,70 +1323,33 @@ class _NotePageState extends State<NotePage> {
                     selectable: true,
                     softLineBreak: true,
                     imageBuilder: (uri, title, alt) {
+                      // 1) 应用内图片引用(跨设备同步使用): moonimage:<id>
                       if (uri.scheme == 'moonimage') {
                         final imageId = uri.path;
-                        if (!_showImages) {
-                          // Show compact placeholder instead of full image
-                          return FutureBuilder<String?>(
-                            future: ImageService.instance.getImagePath(imageId),
-                            builder: (context, snapshot) {
-                              final exists = snapshot.hasData && snapshot.data != null;
-                              return Container(
-                                margin: const EdgeInsets.symmetric(vertical: 4),
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                decoration: BoxDecoration(
-                                  border: Border.all(color: _borderLight),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(exists ? Icons.image_outlined : Icons.broken_image_outlined,
-                                        size: 16, color: _textTertiary),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      (alt != null && alt.isNotEmpty) ? alt : '图片',
-                                      style: TextStyle(fontSize: 13, color: _textTertiary),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          );
-                        }
                         return FutureBuilder<String?>(
                           future: ImageService.instance.getImagePath(imageId),
                           builder: (context, snapshot) {
-                            if (snapshot.hasData && snapshot.data != null) {
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 6),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: ConstrainedBox(
-                                    constraints: const BoxConstraints(maxHeight: 320),
-                                    child: Image.file(
-                                      File(snapshot.data!),
-                                      fit: BoxFit.contain,
-                                      errorBuilder: (context, error, stackTrace) {
-                                        return Container(
-                                          height: 80,
-                                          color: _borderLight.withAlpha(80),
-                                          child: Center(
-                                            child: Icon(Icons.broken_image_outlined,
-                                                size: 24, color: _textTertiary),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ),
-                                ),
-                              );
+                            final path = snapshot.data;
+                            final exists = path != null;
+                            if (!_showImages || !exists) {
+                              return _imageChip(alt, exists, imageId, path);
                             }
-                            return const SizedBox.shrink();
+                            return _tappableImage(
+                                imageId: imageId, path: path, alt: alt);
                           },
                         );
                       }
-                      // Default: try loading as network image
+                      // 2) 标准本地路径(file:// 或绝对路径)——方便用其它 Markdown 软件查看
+                      final localPath = uri.scheme == 'file'
+                          ? uri.toFilePath()
+                          : (uri.scheme.isEmpty && _looksLikeLocalPath(uri.path)
+                              ? Uri.decodeComponent(uri.path)
+                              : null);
+                      if (localPath != null) {
+                        return _tappableImage(
+                            imageId: null, path: localPath, alt: alt);
+                      }
+                      // 3) 网络图片
                       return Image.network(
                         uri.toString(),
                         fit: BoxFit.contain,
