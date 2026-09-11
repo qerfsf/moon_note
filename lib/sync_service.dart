@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -1206,7 +1206,7 @@ class SyncService {
     String getSetting(String key) =>
         settings.where((r) => r['key'] == key).firstOrNull?['value'] as String? ?? '';
     _sendJson(request.response, {
-      'version': '3.2.0',
+      'version': '3.2.1',
       'device': Platform.localHostname,
       'sync_key': getSetting('sync_key'),
       'device_name': getSetting('device_name'),
@@ -1452,7 +1452,7 @@ class SyncService {
     } catch (_) {}
 
     return {
-      'version': '3.2.0',
+      'version': '3.2.1',
       'device': Platform.localHostname,
       'sync_key': await _getSyncKey(),
       'watermark': watermark,

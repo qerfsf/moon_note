@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class AboutPage extends StatelessWidget {
@@ -36,7 +36,7 @@ class AboutPage extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            '版本 3.2.0',
+            '版本 3.2.1',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 14, color: cs.outline),
           ),

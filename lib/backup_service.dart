@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
@@ -22,7 +22,7 @@ class BackupService {
     final db = await DatabaseHelper.instance.database;
     final data = <String, dynamic>{
       'version': 1,
-      'app_version': '3.2.0',
+      'app_version': '3.2.1',
       'exported_at': DateTime.now().toIso8601String(),
       'tables': <String, dynamic>{},
     };

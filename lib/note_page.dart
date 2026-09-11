@@ -901,9 +901,10 @@ class _NotePageState extends State<NotePage> {
     );
   }
 
-  /// 可点击的图片(点击弹出操作菜单)
+  /// 可点击的图片(点击弹出操作菜单);透明区域显示棋盘格底纹,便于看出透明通道
   Widget _tappableImage(
       {String? imageId, required String path, String? alt}) {
+    final cs = Theme.of(context).colorScheme;
     return GestureDetector(
       onTap: () => _showImageMenu(imageId: imageId, path: path),
       child: Padding(
@@ -912,17 +913,29 @@ class _NotePageState extends State<NotePage> {
           borderRadius: BorderRadius.circular(8),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 320),
-            child: Image.file(
-              File(path),
-              fit: BoxFit.contain,
-              errorBuilder: (context, error, stackTrace) => Container(
-                height: 80,
-                color: _borderLight.withAlpha(80),
-                child: Center(
-                  child: Icon(Icons.broken_image_outlined,
-                      size: 24, color: _textTertiary),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: _CheckerPainter(
+                      cs.surfaceContainerHighest,
+                      cs.surface,
+                    ),
+                  ),
                 ),
-              ),
+                Image.file(
+                  File(path),
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    height: 80,
+                    color: _borderLight.withAlpha(80),
+                    child: Center(
+                      child: Icon(Icons.broken_image_outlined,
+                          size: 24, color: _textTertiary),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -930,9 +943,11 @@ class _NotePageState extends State<NotePage> {
     );
   }
 
-  /// 图片操作菜单:打开文件夹 / 系统程序打开 / 另存为 / 复制路径
-  void _showImageMenu({String? imageId, required String path}) {
+  /// 图片操作菜单:格式信息 + 打开文件夹 / 系统程序打开 / 另存为 / 复制路径
+  Future<void> _showImageMenu({String? imageId, required String path}) async {
     final cs = Theme.of(context).colorScheme;
+    final info = await ImageService.probeImage(path);
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: cs.surface,
@@ -942,7 +957,23 @@ class _NotePageState extends State<NotePage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+              child: Row(
+                children: [
+                  Icon(Icons.image_outlined, size: 16, color: cs.outline),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      ImageService.describeImage(info),
+                      style: TextStyle(fontSize: 12, color: cs.outline),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, thickness: 0.5, color: cs.outlineVariant),
             ListTile(
               dense: true,
               leading: Icon(Icons.folder_open_outlined,
@@ -1550,4 +1581,35 @@ class _NotePageState extends State<NotePage> {
           : body,
     );
   }
+}
+
+/// 透明区域底纹:棋盘格,用于直观看出图片的透明通道。
+class _CheckerPainter extends CustomPainter {
+  final Color light;
+  final Color dark;
+  final double cell;
+
+  const _CheckerPainter(this.light, this.dark, [this.cell = 8]);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint();
+    final cols = (size.width / cell).ceil();
+    final rows = (size.height / cell).ceil();
+    for (var r = 0; r < rows; r++) {
+      for (var c = 0; c < cols; c++) {
+        paint.color = ((r + c) % 2 == 0) ? light : dark;
+        canvas.drawRect(
+          Rect.fromLTWH(c * cell, r * cell, cell, cell),
+          paint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CheckerPainter oldDelegate) =>
+      oldDelegate.light != light ||
+      oldDelegate.dark != dark ||
+      oldDelegate.cell != cell;
 }

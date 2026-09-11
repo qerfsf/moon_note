@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -385,7 +385,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     MaterialPageRoute(builder: (_) => const RecycleBinPage()));
               }),
           _tile(cs, Icons.info_outline, '关于 Moon Note',
-              subtitle: '版本 3.2.0',
+              subtitle: '版本 3.2.1',
               onTap: () {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const AboutPage()));
