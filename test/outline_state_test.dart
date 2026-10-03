@@ -66,6 +66,24 @@ void main() {
       final ids = outlineIdentities(parseOutline(_doc));
       expect(ids.values.any((v) => v.startsWith('l1|条目 A')), isTrue);
     });
+
+    test('标识里绝不含换行 —— 持久化是用换行拼接存的', () {
+      // note_page 存的时候用 '\n'.join(identities)、读的时候按 '\n' 切分,
+      // 所以标识里一旦出现换行,整份折叠状态就会被切错。
+      final ids = outlineIdentities(parseOutline('# 甲\n## 乙\n- 丙\n### 丁\n'));
+      for (final id in ids.values) {
+        expect(id.contains('\n'), isFalse, reason: '$id 含换行');
+        expect(id.contains('\r'), isFalse, reason: '$id 含回车');
+      }
+    });
+
+    test('拼接/切分能原样还原(模拟 app_settings 的存读)', () {
+      final ids = outlineIdentities(parseOutline(_doc)).values.toSet();
+      final stored = ids.join('\n');
+      final restored =
+          stored.split('\n').where((s) => s.isNotEmpty).toSet();
+      expect(restored, ids);
+    });
   });
 
   group('headingsInOrder', () {
