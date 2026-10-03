@@ -9,6 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'database.dart';
 import 'image_service.dart';
 import 'outline.dart';
+import 'copy_block.dart';
 
 class NotePage extends StatefulWidget {
   final String noteId;
@@ -501,6 +502,33 @@ class _NotePageState extends State<NotePage> {
     _doSave();
   }
 
+  /// 插入一个「可复制块」(```copy 标题 ... ```)。
+  /// 光标落在内容行开头,插入后可直接输入;有选中文字时用它当内容。
+  void _insertCopyBlock() {
+    _undoStack.add(_contentController.text);
+    _redoStack.clear();
+    final text = _contentController.text;
+    final selection = _contentController.selection;
+
+    final start = selection.isValid ? selection.start : text.length;
+    final end = selection.isValid && selection.end > start ? selection.end : start;
+    final selected = text.substring(start, end);
+
+    final header = '```$kCopyBlockFence 标题\n';
+    final body = selected.isEmpty ? '内容' : selected;
+    final replacement = '$header$body\n```\n';
+
+    final newText = text.replaceRange(start, end, replacement);
+    final caret = start + header.length; // 内容行开头
+
+    _contentController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: caret),
+    );
+    setState(() => _contentVersion++);
+    _doSave();
+  }
+
   Future<void> _showLinkPicker() async {
     final db = await DatabaseHelper.instance.database;
     final notes = await db.query(
@@ -935,6 +963,7 @@ class _NotePageState extends State<NotePage> {
                   case 'h2': _insertMarkdown('## ', ''); break;
                   case 'strike': _insertMarkdown('~~', '~~'); break;
                   case 'checklist': _insertMarkdown('- [ ] ', ''); break;
+                  case 'copyblock': _insertCopyBlock(); break;
                   case 'search': _openFind(); break;
                   case 'copylink': _copyLink(); break;
                   case 'export_md': _exportMarkdownWithImages(); break;
@@ -950,6 +979,7 @@ class _NotePageState extends State<NotePage> {
                 _popupItem(Icons.format_size, '二级标题', 'h2'),
                 _popupItem(Icons.strikethrough_s, '删除线', 'strike'),
                 _popupItem(Icons.checklist, '待办清单', 'checklist'),
+                _popupItem(Icons.copy_all_outlined, '可复制块', 'copyblock'),
                 _popupItem(Icons.search, '查找替换', 'search'),
                 _popupItem(Icons.ios_share, '导出 Markdown(含图片)', 'export_md'),
                 const PopupMenuDivider(height: 1),
@@ -1468,6 +1498,8 @@ class _NotePageState extends State<NotePage> {
                     selectable: true,
                     softLineBreak: true,
                     builders: {
+                      // ```copy 围栏渲染成带一键复制的框;其它代码块返回 null 走默认渲染
+                      'code': CopyBlockBuilder(),
                       for (final tag in const ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
                         tag: _HeadingAnchorBuilder(
                             _previewHeadingKeys, () => headingOrdinal++),
