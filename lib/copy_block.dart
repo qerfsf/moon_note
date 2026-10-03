@@ -14,8 +14,12 @@ const String kCopyBlockFence = 'copy';
 /// 工具栏插入用的模板。
 const String kCopyBlockTemplate = '```$kCopyBlockFence 标题\n内容\n```\n';
 
-/// 用户点标题栏文字时把光标放到内容行开头(即模板第一行之后)。
-const int kCopyBlockCaretOffset = 3 + 1 + 4 + 1 + 2 + 1; // ```copy 标题\n 的长度
+/// 模板第一行(```copy 标题\n)的长度 —— 把光标放这里就落在内容行开头,
+/// 插入后可以直接敲内容,不用手动往下挪。
+///
+/// 故意从模板本身量出来而不是手写数字:手算曾写错过(多算了一个 1,光标
+/// 会跑到内容首字之后),而且改 fence 名字或标题占位符时也不会失效。
+final int kCopyBlockCaretOffset = kCopyBlockTemplate.indexOf('内容');
 
 /// 给 flutter_markdown 用的 builder:只接管 ```copy 围栏,其余返回 null 走默认渲染。
 class CopyBlockBuilder extends MarkdownElementBuilder {

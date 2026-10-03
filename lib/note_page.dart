@@ -519,7 +519,7 @@ class _NotePageState extends State<NotePage> {
     final replacement = '$header$body\n```\n';
 
     final newText = text.replaceRange(start, end, replacement);
-    final caret = start + header.length; // 内容行开头
+    final caret = start + kCopyBlockCaretOffset; // 内容行开头
 
     _contentController.value = TextEditingValue(
       text: newText,

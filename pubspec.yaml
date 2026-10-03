@@ -1,4 +1,4 @@
-﻿name: moon_note
+name: moon_note
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -37,6 +37,9 @@ dependencies:
   path: ^1.9.0
   path_provider: ^2.1.3
   flutter_markdown: ^0.7.6
+  # flutter_markdown 的传递依赖,但 copy_block.dart 直接用到 md.Element 来接管
+  # ```copy 围栏 —— 直接 import 的包要显式声明,不然哪天上游换掉就编译不过。
+  markdown: ^7.3.0
   flutter_local_notifications: ^20.1.0
   file_picker: ^8.0.0
 
