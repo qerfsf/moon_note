@@ -176,6 +176,30 @@ class _NotePageState extends State<NotePage> {
     return w >= _outlineWideWidth;
   }
 
+  /// 在目录里把某一节拖到另一节前/后:直接改正文。
+  ///
+  /// 真正的文本改写交给纯函数 moveSectionInMarkdown(它单独测过);这里只负责
+  /// 落库、记撤销、让预览重建。函数返回 null 表示这次拖拽没有意义
+  /// (拖到自己子树里、或本来就在那个位置),那就什么都不做 —— 不要写回一份
+  /// 相同内容的新文本,否则会白多一条撤销记录、还会打乱光标和未保存状态。
+  void _moveOutlineNode(OutlineNode node, OutlineNode target, bool after) {
+    final text = _contentController.text;
+    final moved =
+        moveSectionInMarkdown(text, _currentOutline(), node, target, after: after);
+    if (moved == null || moved == text) return;
+
+    _undoStack.add(text);
+    _redoStack.clear();
+    if (_undoStack.length > 30) _undoStack.removeAt(0);
+
+    _contentController.value = TextEditingValue(
+      text: moved,
+      selection: const TextSelection.collapsed(offset: 0),
+    );
+    setState(() => _contentVersion++);
+    _doSave();
+  }
+
   Widget _buildOutlinePanel() {
     return Container(
       width: _outlinePanelWidth,
@@ -201,6 +225,8 @@ class _NotePageState extends State<NotePage> {
           _outlineLevel = lv;
           _saveOutlineLevel(lv);
         },
+        // 拖拽改结构只在宽屏(电脑端)的常驻侧栏里给;手机底部弹层不好拖。
+        onMoveNode: _moveOutlineNode,
       ),
     );
   }

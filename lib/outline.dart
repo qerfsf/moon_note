@@ -307,6 +307,97 @@ String sectionExcerptFor(
   return body;
 }
 
+/// 求某个标题「整节」在原文里的字符范围 [start, end)。
+///
+/// 一节 = 该标题那一行起,到**下一个同级或更高级标题**之前(含中间的空行),
+/// 所以搬动一节会把它下面的子标题和正文一起带走。
+/// 标题以外的节点(列表项)没有节的概念,返回 null。
+({int start, int end})? sectionRange(
+  String markdown,
+  List<OutlineNode> nodes,
+  OutlineNode node,
+) {
+  if (!node.isHeading) return null;
+  final flat = flattenNodes(nodes);
+  final idx = flat.indexWhere((n) => n.lineIndex == node.lineIndex);
+  if (idx < 0) return null;
+
+  final start = node.charOffset.clamp(0, markdown.length);
+  var end = markdown.length;
+  for (var i = idx + 1; i < flat.length; i++) {
+    final n = flat[i];
+    if (n.isHeading && n.level <= node.level) {
+      end = n.charOffset.clamp(start, markdown.length);
+      break;
+    }
+  }
+  return (start: start, end: end);
+}
+
+/// 把 [node] 所在整节搬到 [target] 所在节的**前面或后面**。
+///
+/// 返回搬完之后的正文;如果这次搬动没有意义就返回 null,调用方据此
+/// **什么都不做** —— 而不是写回一份内容相同的新文本(那会平白多一条撤销记录,
+/// 也会把光标位置和未保存状态搅乱)。返回 null 的情形:
+///   - 拖到自己身上
+///   - 落点在自己这一节内部(等于拖进自己的子树,会形成环)
+///   - 本来就已经在那个位置
+///   - 任一方不是标题(列表项没有节的概念,界不了范围)
+///
+/// 只做「换位置」,不改标题层级 —— 层级变了会连带改变别的节的归属,
+/// 那种改动不适合靠拖一下来完成。
+///
+/// 搬完会在**这一节的两处接缝**上补齐空行,保证节与节之间空一行。
+/// 只碰这两处,文档其余部分原样保留。
+String? moveSectionInMarkdown(
+  String markdown,
+  List<OutlineNode> nodes,
+  OutlineNode node,
+  OutlineNode target, {
+  bool after = false,
+}) {
+  if (identical(node, target) || node.lineIndex == target.lineIndex) return null;
+  final src = sectionRange(markdown, nodes, node);
+  final dst = sectionRange(markdown, nodes, target);
+  if (src == null || dst == null) return null;
+
+  final ins = after ? dst.end : dst.start;
+  // 落点落在自己这一节内(含首尾)= 拖进自己子树或拖回原位,拒绝
+  if (ins >= src.start && ins <= src.end) return null;
+
+  final slice = markdown.substring(src.start, src.end);
+  final remainder =
+      markdown.substring(0, src.start) + markdown.substring(src.end);
+  // 从前面搬走会让后面的偏移整体前移,落点要跟着修正
+  final at = (ins > src.start ? ins - (src.end - src.start) : ins)
+      .clamp(0, remainder.length);
+
+  final before = remainder.substring(0, at);
+  final tail = remainder.substring(at);
+
+  // 块只保留内容本身(剥掉尾部空行),前后分隔统一由下面拼接时补 ——
+  // 否则每搬一次都会在接缝上多留一个空行,来回拖几次文档就被空行撑肥了。
+  final block = slice.replaceFirst(RegExp(r'\n+$'), '');
+
+  // 前半段必须收在整行边界上,否则会把两行粘起来:把一节搬到文末时曾生成
+  // `乙的正文# 甲`,「甲」直接不再是标题,从目录里消失。
+  var head = before;
+  if (head.trim().isNotEmpty) {
+    if (!head.endsWith('\n')) head = '$head\n'; // 落在行中间:先断行
+    head = head.replaceFirst(RegExp(r'\n+$'), '\n\n'); // 再保证空一行
+  }
+
+  final segments = <String>[
+    if (head.isNotEmpty) head,
+    '$block\n',
+    if (tail.isNotEmpty) '\n${tail.replaceFirst(RegExp(r'^\n+'), '')}',
+  ];
+  var out = segments.join();
+  // 原文没有收尾换行就不要凭空添一个
+  if (!markdown.endsWith('\n')) out = out.replaceFirst(RegExp(r'\n+$'), '');
+  return out;
+}
+
 /// 章节正文的悬停预览气泡。
 ///
 /// 单独抽成一个具名控件,而不是就地写个 Tooltip:面板上那些 IconButton 的
@@ -355,6 +446,7 @@ class OutlinePanel extends StatefulWidget {
     this.onStateChanged,
     this.initialLevel,
     this.onLevelChanged,
+    this.onMoveNode,
   });
 
   final List<OutlineNode> nodes;
@@ -381,12 +473,20 @@ class OutlinePanel extends StatefulWidget {
   final int? initialLevel;
   final void Function(int? level)? onLevelChanged;
 
+  /// 在目录里把某一节拖到另一节前/后。给了它才启用拖拽。
+  final void Function(OutlineNode node, OutlineNode target, bool after)?
+      onMoveNode;
+
   @override
   State<OutlinePanel> createState() => _OutlinePanelState();
 }
 
 class _OutlinePanelState extends State<OutlinePanel> {
-  final Set<int> _collapsed = {};
+  /// 折叠状态以**稳定标识**为准,不用行号。
+  ///
+  /// 行号在正文插删行、拖动改结构之后全会变;存行号的话,拖完一节之后
+  /// 记忆会错位到别的标题上,表现为「我没折这个却被折了」。
+  final Set<String> _collapsedIds = {};
 
   /// 「只显示到第 N 级」;null 表示不限制。
   int? _levelLimit;
@@ -398,43 +498,86 @@ class _OutlinePanelState extends State<OutlinePanel> {
   /// 附加在当前章节那一行上,用来把它滚进视野。
   final GlobalKey _activeRowKey = GlobalKey();
 
+  /// 每个标题一行的 key,拖拽时要靠它算落点在行的上半还是下半。
+  final Map<int, GlobalKey> _rowKeys = {};
+
+  /// 最近一次拖拽悬停落在行的下半部(决定插到目标后面)。
+  bool _dropAfter = false;
+
   /// 「复制全部标题」成功后的短暂提示文字。
   String _copyLabel = '';
+
+  Map<int, String> get _ids => outlineIdentities(widget.nodes);
+
+  /// 当前树下行号形式的折叠集合(渲染用)。
+  Set<int> get _collapsedLines {
+    final ids = _ids;
+    return {
+      for (final e in ids.entries)
+        if (_collapsedIds.contains(e.value)) e.key,
+    };
+  }
 
   @override
   void initState() {
     super.initState();
     _levelLimit = widget.initialLevel;
-    _restoreCollapsed();
-    if (_levelLimit != null) {
-      _collapsed
-        ..clear()
-        ..addAll(collapseForLevel(widget.nodes, _levelLimit!));
-    }
+    _collapsedIds.addAll(widget.initialCollapsed ?? const <String>{});
+    // 层级限制和逐个折叠是两套状态,层级优先:被限制藏起来的不必再记
+    if (_levelLimit != null) _collapsedIds.addAll(_idsForLevel(_levelLimit!));
     _scheduleRevealActive();
   }
 
-  /// 把持久化的稳定标识还原成 lineIndex 集合。
-  /// 找不到的标识直接忽略(标题被删或被改名了)。
-  void _restoreCollapsed() {
-    final saved = widget.initialCollapsed;
-    if (saved == null || saved.isEmpty) return;
-    final ids = outlineIdentities(widget.nodes);
-    for (final entry in ids.entries) {
-      if (saved.contains(entry.value)) _collapsed.add(entry.key);
-    }
+  /// 需要折起来才能「只显示到第 level 级」的那些节点的标识。
+  Set<String> _idsForLevel(int level) {
+    final ids = _ids;
+    return {
+      for (final line in collapseForLevel(widget.nodes, level))
+        if (ids[line] != null) ids[line]!,
+    };
   }
 
-  /// 把当前折叠状态交给调用方持久化。
-  void _notifyState() {
-    final cb = widget.onStateChanged;
-    if (cb == null) return;
-    final ids = outlineIdentities(widget.nodes);
-    cb({
-      for (final line in _collapsed)
-        if (ids[line] != null) ids[line]!,
-    });
+  /// 所有有子节点的节点的标识(「全部折叠」用)。
+  Set<String> get _parentIds {
+    final ids = _ids;
+    final out = <String>{};
+    void walk(List<OutlineNode> list) {
+      for (final n in list) {
+        if (n.hasChildren && ids[n.lineIndex] != null) {
+          out.add(ids[n.lineIndex]!);
+        }
+        walk(n.children);
+      }
+    }
+
+    walk(widget.nodes);
+    return out;
   }
+
+  /// 某个节点的祖先链标识(自动展开时要移除它们)。
+  List<String> _ancestorIdsOf(int lineIndex) {
+    final path = <int>[];
+    bool walk(List<OutlineNode> nodes, List<int> acc) {
+      for (final n in nodes) {
+        if (n.lineIndex == lineIndex) {
+          path.addAll(acc);
+          return true;
+        }
+        if (walk(n.children, [...acc, n.lineIndex])) return true;
+      }
+      return false;
+    }
+
+    walk(widget.nodes, const []);
+    final ids = _ids;
+    return [
+      for (final line in path)
+        if (ids[line] != null) ids[line]!,
+    ];
+  }
+
+  /// 把当前折叠状态交给调用方持久化。存的本来就是标识,不必再转换。
+  void _notifyState() => widget.onStateChanged?.call(Set<String>.from(_collapsedIds));
 
   @override
   void didUpdateWidget(OutlinePanel oldWidget) {
@@ -443,8 +586,7 @@ class _OutlinePanelState extends State<OutlinePanel> {
       if (widget.activeLineIndex != null && widget.autoExpand) {
         // 当前章节若被折叠在某个收起的父节点里,先把祖先链展开,
         // 否则高亮的那一行根本不可见 —— 这正是 Quiet Outline 的 auto expand。
-        final anc = _ancestorsOf(widget.activeLineIndex!);
-        if (anc.any(_collapsed.contains)) _collapsed.removeAll(anc);
+        _collapsedIds.removeAll(_ancestorIdsOf(widget.activeLineIndex!));
       }
       _scheduleRevealActive();
     }
@@ -464,48 +606,20 @@ class _OutlinePanelState extends State<OutlinePanel> {
     });
   }
 
-  /// 求某个节点的祖先 lineIndex 链(不含自己)。
-  List<int> _ancestorsOf(int lineIndex) {
-    final path = <int>[];
-    bool walk(List<OutlineNode> nodes, List<int> acc) {
-      for (final n in nodes) {
-        if (n.lineIndex == lineIndex) {
-          path.addAll(acc);
-          return true;
-        }
-        if (walk(n.children, [...acc, n.lineIndex])) return true;
-      }
-      return false;
-    }
-
-    walk(widget.nodes, const []);
-    return path;
-  }
-
   @override
   void dispose() {
     _filterController.dispose();
     super.dispose();
   }
 
-  void _collectParents(List<OutlineNode> nodes, Set<int> into) {
-    for (final n in nodes) {
-      if (n.hasChildren) {
-        into.add(n.lineIndex);
-        _collectParents(n.children, into);
-      }
-    }
-  }
-
   void _toggleAll() {
-    final all = <int>{};
-    _collectParents(widget.nodes, all);
+    final all = _parentIds;
     setState(() {
       // 已经全折叠 -> 全部展开;否则全部折叠
-      if (all.isNotEmpty && _collapsed.length >= all.length) {
-        _collapsed.clear();
+      if (all.isNotEmpty && _collapsedIds.length >= all.length) {
+        _collapsedIds.clear();
       } else {
-        _collapsed
+        _collapsedIds
           ..clear()
           ..addAll(all);
       }
@@ -519,19 +633,19 @@ class _OutlinePanelState extends State<OutlinePanel> {
   void _applyLevel(int? level) {
     setState(() {
       _levelLimit = level;
-      _collapsed
+      _collapsedIds
         ..clear()
-        ..addAll(level == null
-            ? const <int>{}
-            : collapseForLevel(widget.nodes, level));
+        ..addAll(level == null ? const <String>{} : _idsForLevel(level));
     });
     widget.onLevelChanged?.call(level);
     _notifyState();
   }
 
   void _toggleNode(int lineIndex) {
+    final id = _ids[lineIndex];
+    if (id == null) return;
     setState(() {
-      if (!_collapsed.remove(lineIndex)) _collapsed.add(lineIndex);
+      if (!_collapsedIds.remove(id)) _collapsedIds.add(id);
     });
     _notifyState();
   }
@@ -541,8 +655,12 @@ class _OutlinePanelState extends State<OutlinePanel> {
     final cs = Theme.of(context).colorScheme;
     final filtering = _filter.trim().isNotEmpty;
     final tree = filtering ? filterOutline(widget.nodes, _filter) : widget.nodes;
+    // 折叠集合按标识算出当前树对应的行号 —— 拖动改结构后行号会变,
+    // 直接存行号的话记忆会错位到别的标题上。
+    final collapsedLines = _collapsedLines;
     // 过滤时强制展开,否则命中的节点可能被折叠状态藏起来,看着像没搜到
-    final rows = flattenOutline(tree, filtering ? const <int>{} : _collapsed);
+    final rows =
+        flattenOutline(tree, filtering ? const <int>{} : collapsedLines);
     final hasAnyChild = _collectCount(widget.nodes) > 0;
 
     return Column(
@@ -683,7 +801,8 @@ class _OutlinePanelState extends State<OutlinePanel> {
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   itemCount: rows.length,
-                  itemBuilder: (context, i) => _buildRow(cs, rows[i]),
+                  itemBuilder: (context, i) =>
+                      _buildRow(cs, rows[i], collapsedLines),
                 ),
         ),
         // 底部:上一个/下一个标题 + 复制全部标题
@@ -769,9 +888,9 @@ class _OutlinePanelState extends State<OutlinePanel> {
     return n;
   }
 
-  Widget _buildRow(ColorScheme cs, OutlineRow row) {
+  Widget _buildRow(ColorScheme cs, OutlineRow row, Set<int> collapsedLines) {
     final node = row.node;
-    final collapsed = _collapsed.contains(node.lineIndex);
+    final collapsed = collapsedLines.contains(node.lineIndex);
     final isHeading = node.isHeading;
     final isActive = widget.activeLineIndex != null &&
         node.lineIndex == widget.activeLineIndex;
@@ -846,11 +965,87 @@ class _OutlinePanelState extends State<OutlinePanel> {
     // 悬停预览该章节正文(Quiet Outline 的 Hover preview)。
     // 列表项没有章节概念,不挂。
     final src = widget.sourceText;
-    if (src == null || !isHeading) return rowWidget;
-    final excerpt = sectionExcerptFor(src, widget.nodes, node);
-    if (excerpt.isEmpty) return rowWidget;
+    Widget result = rowWidget;
+    if (src != null && isHeading) {
+      final excerpt = sectionExcerptFor(src, widget.nodes, node);
+      if (excerpt.isNotEmpty) {
+        result = SectionPreviewTooltip(excerpt: excerpt, child: rowWidget);
+      }
+    }
 
-    return SectionPreviewTooltip(excerpt: excerpt, child: rowWidget);
+    // 拖动改结构:只在给了回调和原文、且是标题时启用
+    if (widget.onMoveNode != null && src != null && isHeading) {
+      result = _wrapDraggable(result, cs, node);
+    }
+    return result;
+  }
+
+  /// 拖动落点是否合法:两边都得是标题、不是自己,且目标不在被拖这一节内部
+  /// (拖进自己的子树会形成环)。
+  bool _canDrop(OutlineNode dragged, OutlineNode target) {
+    final src = widget.sourceText;
+    if (src == null) return false;
+    if (!dragged.isHeading || !target.isHeading) return false;
+    if (dragged.lineIndex == target.lineIndex) return false;
+    final a = sectionRange(src, widget.nodes, dragged);
+    final b = sectionRange(src, widget.nodes, target);
+    if (a == null || b == null) return false;
+    return !(b.start >= a.start && b.start < a.end);
+  }
+
+  Widget _wrapDraggable(Widget row, ColorScheme cs, OutlineNode node) {
+    final key = _rowKeys.putIfAbsent(node.lineIndex, () => GlobalKey());
+    return DragTarget<OutlineNode>(
+      onWillAcceptWithDetails: (d) => _canDrop(d.data, node),
+      onMove: (d) {
+        // 落在这一行的上半还是下半,决定插到目标前面还是后面
+        final box = key.currentContext?.findRenderObject();
+        if (box is RenderBox && box.hasSize) {
+          final local = box.globalToLocal(d.offset);
+          _dropAfter = local.dy > box.size.height / 2;
+        }
+      },
+      onAcceptWithDetails: (d) => widget.onMoveNode!(d.data, node, _dropAfter),
+      builder: (ctx, candidate, rejected) {
+        final hovering = candidate.isNotEmpty;
+        return Draggable<OutlineNode>(
+          data: node,
+          dragAnchorStrategy: pointerDragAnchorStrategy,
+          feedback: Material(
+            color: Colors.transparent,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: cs.primary),
+              ),
+              child: Text(
+                node.text,
+                style: TextStyle(fontSize: 12, color: cs.onSurface),
+              ),
+            ),
+          ),
+          childWhenDragging: Opacity(opacity: 0.35, child: row),
+          child: Container(
+            key: key,
+            decoration: hovering
+                ? BoxDecoration(
+                    border: Border(
+                      top: BorderSide(
+                          color: _dropAfter ? Colors.transparent : cs.primary,
+                          width: 2),
+                      bottom: BorderSide(
+                          color: _dropAfter ? cs.primary : Colors.transparent,
+                          width: 2),
+                    ),
+                  )
+                : null,
+            child: row,
+          ),
+        );
+      },
+    );
   }
 }
 

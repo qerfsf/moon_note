@@ -16,6 +16,7 @@ Future<void> pumpPanel(
   void Function(Set<String>)? onStateChanged,
   int? initialLevel,
   void Function(int?)? onLevelChanged,
+  void Function(OutlineNode, OutlineNode, bool)? onMoveNode,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -34,6 +35,7 @@ Future<void> pumpPanel(
             onStateChanged: onStateChanged,
             initialLevel: initialLevel,
             onLevelChanged: onLevelChanged,
+            onMoveNode: onMoveNode,
           ),
         ),
       ),
@@ -586,6 +588,118 @@ void main() {
     testWidgets('只有标题挂预览,列表项不挂', (tester) async {
       await pumpPanel(tester, nodes: parseOutline(md), sourceText: md);
       expect(find.byType(SectionPreviewTooltip), findsNWidgets(2)); // 两个标题
+    });
+  });
+
+  group('OutlinePanel 拖拽改结构', () {
+    // 两节平级,最简单的拖动场景
+    const md = '# 第一章\n第一章正文\n\n# 第二章\n第二章正文\n';
+
+    /// 从 [fromText] 拖到 [toText] 行的上/下半部。Draggable 在 ListView 里
+    /// 会不会被滚动手势抢走,就靠这个测试回答。
+    Future<List<String>> dragFrom(
+      WidgetTester tester,
+      String fromText,
+      String toText, {
+      required bool lowerHalf,
+    }) async {
+      final nodes = parseOutline(md);
+      final moves = <String>[];
+      await pumpPanel(
+        tester,
+        nodes: nodes,
+        sourceText: md,
+        onMoveNode: (a, b, after) => moves.add('${a.text}→${b.text}:$after'),
+      );
+
+      final start = tester.getCenter(find.text(fromText));
+      final targetRect = tester.getRect(find.text(toText));
+      final gesture = await tester.startGesture(start);
+      await tester.pump(const Duration(milliseconds: 60));
+      await gesture.moveTo(Offset(
+        targetRect.center.dx,
+        lowerHalf ? targetRect.bottom - 2 : targetRect.top + 2,
+      ));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+      return moves;
+    }
+
+    testWidgets('拖到另一节下半部 -> 插到它后面', (tester) async {
+      final moves = await dragFrom(tester, '第一章', '第二章', lowerHalf: true);
+      expect(moves, ['第一章→第二章:true']);
+    });
+
+    testWidgets('拖到另一节上半部 -> 插到它前面', (tester) async {
+      final moves = await dragFrom(tester, '第二章', '第一章', lowerHalf: false);
+      expect(moves, ['第二章→第一章:false']);
+    });
+
+    testWidgets('拖到自己身上不产生任何回调', (tester) async {
+      final moves = await dragFrom(tester, '第一章', '第一章', lowerHalf: true);
+      expect(moves, isEmpty);
+    });
+
+    testWidgets('拖进自己的子树被拒绝(否则会形成环)', (tester) async {
+      const nested = '# 父\n父正文\n\n## 子\n子正文\n';
+      final nodes = parseOutline(nested);
+      final moves = <String>[];
+      await pumpPanel(
+        tester,
+        nodes: nodes,
+        sourceText: nested,
+        onMoveNode: (a, b, after) => moves.add('${a.text}→${b.text}'),
+      );
+
+      final start = tester.getCenter(find.text('父'));
+      final targetRect = tester.getRect(find.text('子'));
+      final gesture = await tester.startGesture(start);
+      await tester.pump(const Duration(milliseconds: 60));
+      await gesture.moveTo(Offset(targetRect.center.dx, targetRect.bottom - 2));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(moves, isEmpty);
+    });
+
+    testWidgets('列表项不能当拖拽目标', (tester) async {
+      final nodes = parseOutline(_doc);
+      final moves = <String>[];
+      await pumpPanel(
+        tester,
+        nodes: nodes,
+        sourceText: _doc,
+        onMoveNode: (a, b, after) => moves.add('${a.text}→${b.text}'),
+      );
+
+      final start = tester.getCenter(find.text('第一章'));
+      final targetRect = tester.getRect(find.text('条目 A'));
+      final gesture = await tester.startGesture(start);
+      await tester.pump(const Duration(milliseconds: 60));
+      await gesture.moveTo(Offset(targetRect.center.dx, targetRect.bottom - 2));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(moves, isEmpty);
+    });
+
+    testWidgets('没给 onMoveNode 时不挂拖拽(手机弹层里不启用)', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(md), sourceText: md);
+      expect(find.byType(Draggable<OutlineNode>), findsNothing);
+    });
+
+    testWidgets('给了 onMoveNode 时标题可拖,列表项不可拖', (tester) async {
+      await pumpPanel(
+        tester,
+        nodes: parseOutline(_doc),
+        sourceText: _doc,
+        onMoveNode: (_, __, ___) {},
+      );
+      // 4 个标题可拖,列表项不算
+      expect(find.byType(Draggable<OutlineNode>), findsNWidgets(4));
     });
   });
 
