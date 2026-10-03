@@ -4,6 +4,72 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:moon_note/outline.dart';
 
 /// 把 OutlinePanel 塞进最小可用的 MaterialApp 里渲染。
+/// 折叠状态现在是**受控属性**(正文和目录共用一份),所以测试里必须自己持有
+/// 那份状态并把回调接回去 —— 这样测的才是真实数据流,而不是面板的内部实现。
+class _PanelHost extends StatefulWidget {
+  const _PanelHost({
+    required this.nodes,
+    this.onTapNode,
+    this.onClose,
+    this.activeLineIndex,
+    this.autoExpand = true,
+    this.sourceText,
+    this.foldedIds = const <String>{},
+    this.onStateChanged,
+    this.initialLevel,
+    this.onLevelChanged,
+    this.onMoveNode,
+  });
+
+  final List<OutlineNode> nodes;
+  final void Function(OutlineNode)? onTapNode;
+  final VoidCallback? onClose;
+  final int? activeLineIndex;
+  final bool autoExpand;
+  final String? sourceText;
+  final Set<String> foldedIds;
+  final void Function(Set<String>)? onStateChanged;
+  final int? initialLevel;
+  final void Function(int?)? onLevelChanged;
+  final void Function(OutlineNode, OutlineNode, bool)? onMoveNode;
+
+  @override
+  State<_PanelHost> createState() => _PanelHostState();
+}
+
+class _PanelHostState extends State<_PanelHost> {
+  late Set<String> _folded = widget.foldedIds;
+
+  /// 受控状态下由外部改 foldedIds 时也要跟着走(例如「自动展开祖先」)。
+  @override
+  void didUpdateWidget(_PanelHost old) {
+    super.didUpdateWidget(old);
+    final changed = widget.foldedIds.length != old.foldedIds.length ||
+        !widget.foldedIds.containsAll(old.foldedIds);
+    if (changed) _folded = widget.foldedIds;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinePanel(
+      nodes: widget.nodes,
+      onTapNode: widget.onTapNode ?? (_) {},
+      onClose: widget.onClose,
+      activeLineIndex: widget.activeLineIndex,
+      autoExpand: widget.autoExpand,
+      sourceText: widget.sourceText,
+      foldedIds: _folded,
+      onFoldChanged: (f) {
+        setState(() => _folded = f);
+        widget.onStateChanged?.call(f);
+      },
+      initialLevel: widget.initialLevel,
+      onLevelChanged: widget.onLevelChanged,
+      onMoveNode: widget.onMoveNode,
+    );
+  }
+}
+
 Future<void> pumpPanel(
   WidgetTester tester, {
   required List<OutlineNode> nodes,
@@ -24,14 +90,14 @@ Future<void> pumpPanel(
         body: SizedBox(
           width: 240,
           height: 600,
-          child: OutlinePanel(
+          child: _PanelHost(
             nodes: nodes,
-            onTapNode: onTapNode ?? (_) {},
+            onTapNode: onTapNode,
             onClose: onClose,
             activeLineIndex: activeLineIndex,
             autoExpand: autoExpand,
             sourceText: sourceText,
-            initialCollapsed: initialCollapsed,
+            foldedIds: initialCollapsed ?? const <String>{},
             onStateChanged: onStateChanged,
             initialLevel: initialLevel,
             onLevelChanged: onLevelChanged,
@@ -57,6 +123,9 @@ const _doc = '''
 ## 二节
 # 第二章
 ''';
+
+/// 拖拽时那条插入线。
+Finder _dropLineFinder() => find.byKey(const ValueKey('outline-drop-line'));
 
 void main() {
   group('OutlinePanel 渲染', () {
@@ -661,6 +730,84 @@ void main() {
       await gesture.up();
       await tester.pumpAndSettle();
 
+      expect(moves, isEmpty);
+    });
+
+    testWidgets('拖拽过程中显示一条插入线', (tester) async {
+      final nodes = parseOutline(md);
+      await pumpPanel(
+        tester,
+        nodes: nodes,
+        sourceText: md,
+        onMoveNode: (_, __, ___) {},
+      );
+
+      expect(_dropLineFinder(), findsNothing);
+
+      final start = tester.getCenter(find.text('第一章'));
+      final targetRect = tester.getRect(find.text('第二章'));
+      final gesture = await tester.startGesture(start);
+      await tester.pump(const Duration(milliseconds: 60));
+      await gesture.moveTo(Offset(targetRect.center.dx, targetRect.bottom - 2));
+      await tester.pump();
+
+      // 一条 2px 高的横线,而且必须是可见的(不是被裁掉)
+      expect(_dropLineFinder(), findsOneWidget);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(_dropLineFinder(), findsNothing); // 松手后消失
+    });
+
+    testWidgets('拖到列表下方空白处也能落(按行做 DragTarget 时这里会没反应)', (tester) async {
+      final nodes = parseOutline(md);
+      final moves = <String>[];
+      expect(nodes.length, 2);
+      await pumpPanel(
+        tester,
+        nodes: nodes,
+        sourceText: md,
+        onMoveNode: (a, b, after) => moves.add('${a.text}→${b.text}:$after'),
+      );
+
+      final start = tester.getCenter(find.text('第一章'));
+      final gesture = await tester.startGesture(start);
+      await tester.pump(const Duration(milliseconds: 60));
+      // 面板高 600,内容只占顶部一百来像素,这里是彻底的空白
+      await gesture.moveTo(const Offset(120, 500));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(moves, ['第一章→第二章:true']); // 吸到末尾
+    });
+
+    testWidgets('落点不合法时插入线用警示色,松手不改动', (tester) async {
+      const nested = '# 父\n父正文\n\n## 子\n子正文\n';
+      final nodes = parseOutline(nested);
+      final moves = <String>[];
+      await pumpPanel(
+        tester,
+        nodes: nodes,
+        sourceText: nested,
+        onMoveNode: (a, b, after) => moves.add('${a.text}→${b.text}'),
+      );
+
+      final start = tester.getCenter(find.text('父'));
+      final targetRect = tester.getRect(find.text('子'));
+      final gesture = await tester.startGesture(start);
+      await tester.pump(const Duration(milliseconds: 60));
+      await gesture.moveTo(Offset(targetRect.center.dx, targetRect.bottom - 2));
+      await tester.pump();
+
+      final line = tester.widget<Container>(_dropLineFinder());
+      final deco = line.decoration as BoxDecoration;
+      final cs = Theme.of(tester.element(find.byType(OutlinePanel)))
+          .colorScheme;
+      expect(deco.color, cs.error); // 拖进自己子树 -> 红线上场
+
+      await gesture.up();
+      await tester.pumpAndSettle();
       expect(moves, isEmpty);
     });
 

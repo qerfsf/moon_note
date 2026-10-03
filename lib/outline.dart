@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 
 /// 大纲节点:标题(#/##/###)或列表项(- / * / 1.)。
 ///
@@ -398,6 +400,187 @@ String? moveSectionInMarkdown(
   return out;
 }
 
+/// 某个节点的祖先链标识(不含自己),按从上到下排列。
+Set<String> ancestorIdentities(List<OutlineNode> nodes, OutlineNode node) {
+  final ids = outlineIdentities(nodes);
+  final path = <int>[];
+  bool walk(List<OutlineNode> list, List<int> acc) {
+    for (final n in list) {
+      if (n.lineIndex == node.lineIndex) {
+        path.addAll(acc);
+        return true;
+      }
+      if (walk(n.children, [...acc, n.lineIndex])) return true;
+    }
+    return false;
+  }
+
+  walk(nodes, const []);
+  return {
+    for (final line in path)
+      if (ids[line] != null) ids[line]!,
+  };
+}
+
+/// 这个标题有没有可折叠的内容(正文或子标题都算)。
+///
+/// 判据不能只看「有没有子节点」:一个只有正文、没有子标题的标题同样是能折的
+/// (Obsidian 里就是如此),只看子节点会让折它变成「点了没反应」。
+/// 只有空行的也不算内容。
+bool hasFoldableContent(
+  String markdown,
+  List<OutlineNode> nodes,
+  OutlineNode node,
+) {
+  final r = sectionRange(markdown, nodes, node);
+  if (r == null) return false;
+  final nl = markdown.indexOf('\n', r.start);
+  final bodyStart = nl < 0 ? r.end : nl + 1;
+  if (bodyStart >= r.end) return false;
+  return markdown.substring(bodyStart, r.end).trim().isNotEmpty;
+}
+
+/// 正文按折叠状态切一刀,得到「预览真正要渲染的文本」和「其中还看得见的标题」。
+///
+/// 只影响渲染,**不改笔记内容**。折叠某个标题 = 把它标题行之后的整节删掉,
+/// 包括它下面的子标题 —— 所以被外层折叠包住的内层折叠不必重复切
+/// (展开外层时内层仍然是折叠的,因为它的标识还在 foldedIds 里)。
+///
+/// 返回的 headings 与折叠后文本里标题出现的顺序一一对应,渲染器靠这个顺序
+/// 把每个标题认回原来的节点(行号已经变了,不能再用)。foldable 是可以折叠的
+/// 那些节点的标识,界面靠它决定要不要画折叠箭头。
+({String text, List<OutlineNode> headings, Set<String> foldable})
+    foldSectionsForPreview(
+  String markdown,
+  List<OutlineNode> nodes,
+  Set<String> foldedIds,
+) {
+  final all = headingsInOrder(nodes);
+  final ids = outlineIdentities(nodes);
+  final anyNode = flattenNodes(nodes);
+  final foldable = <String>{
+    for (final n in anyNode)
+      if (ids[n.lineIndex] != null &&
+          hasFoldableContent(markdown, nodes, n))
+        ids[n.lineIndex]!,
+  };
+
+  if (foldedIds.isEmpty) {
+    return (text: markdown, headings: all, foldable: foldable);
+  }
+
+  final raw = <({int start, int end})>[];
+  for (final n in anyNode) {
+    final id = ids[n.lineIndex];
+    if (id == null || !foldedIds.contains(id)) continue;
+    if (!foldable.contains(id)) continue; // 没内容可折,别白切一刀
+    final r = sectionRange(markdown, nodes, n);
+    if (r != null) raw.add(r);
+  }
+  if (raw.isEmpty) return (text: markdown, headings: all, foldable: foldable);
+  raw.sort((a, b) => a.start.compareTo(b.start));
+
+  // 被外层范围包住的内层直接丢掉(切一次就够了),并把切点从「标题行开头」
+  // 挪到「标题行之后」—— 标题本身要留着。
+  final cuts = <({int start, int end})>[];
+  for (final r in raw) {
+    if (cuts.any((k) => r.start >= k.start && r.end <= k.end)) continue;
+    final nl = markdown.indexOf('\n', r.start);
+    cuts.add((start: nl < 0 ? r.end : nl + 1, end: r.end));
+  }
+
+  final sb = StringBuffer();
+  var at = 0;
+  for (final c in cuts) {
+    if (c.start >= c.end) continue;
+    sb.write(markdown.substring(at, c.start));
+    at = c.end;
+  }
+  sb.write(markdown.substring(at));
+
+  final visible = <OutlineNode>[];
+  for (final h in all) {
+    final cut = cuts.any((c) => h.charOffset >= c.start && h.charOffset < c.end);
+    if (!cut) visible.add(h);
+  }
+  return (text: sb.toString(), headings: visible, foldable: foldable);
+}
+
+/// 给预览里的标题挂锚点 + 折叠箭头,让正文自己也能展开收起(参考 Obsidian)。
+///
+/// 锚点 key 按**可见标题**的顺序分配;行号在折叠后已经变了,所以要靠调用方
+/// 传进来的 visibleHeadings 顺序把每个标题认回原节点。
+class FoldableHeadingBuilder extends MarkdownElementBuilder {
+  FoldableHeadingBuilder({
+    required this.keys,
+    required this.visibleHeadings,
+    required this.isFolded,
+    required this.onToggleFold,
+    required this.isFoldable,
+  });
+
+  /// 渲染时按顺序填进去的锚点 key,跳转要用。
+  final List<GlobalKey> keys;
+
+  /// 折叠之后仍然可见的标题,按文档顺序。
+  final List<OutlineNode> visibleHeadings;
+
+  final bool Function(OutlineNode node) isFolded;
+  final void Function(OutlineNode node) onToggleFold;
+
+  /// 这个标题有没有内容可折(正文也算,见 hasFoldableContent)。
+  /// 没有就不画箭头 —— 点了没反应的箭头比没有箭头更让人困惑。
+  final bool Function(OutlineNode node) isFoldable;
+
+  int _next = 0;
+
+  /// 已经渲染了几个标题(测试与跳转逻辑用得上)。
+  int get rendered => _next;
+
+  @override
+  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    // 自愈:万一这一帧被重建了第二遍(主题/尺寸变化会重新走一遍 Markdown AST),
+    // 计数器已经用到底,就从头开始,否则会认不到节点、箭头全丢。
+    if (_next >= visibleHeadings.length) _next = 0;
+    final index = _next++;
+    final node =
+        index < visibleHeadings.length ? visibleHeadings[index] : null;
+    while (keys.length <= index) {
+      keys.add(GlobalKey());
+    }
+
+    return Container(
+      key: keys[index],
+      padding: const EdgeInsets.only(top: 8, bottom: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (node != null && isFoldable(node))
+            InkWell(
+              onTap: () => onToggleFold(node),
+              customBorder: const CircleBorder(),
+              child: Padding(
+                padding: const EdgeInsets.only(right: 2, top: 2),
+                child: Icon(
+                  isFolded(node)
+                      ? Icons.chevron_right
+                      : Icons.keyboard_arrow_down,
+                  size: 18,
+                ),
+              ),
+            )
+          else
+            // 没有子节点也占位,保证所有标题文字左缘对齐
+            const SizedBox(width: 20),
+          Expanded(
+            child: Text(element.textContent, style: preferredStyle),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 章节正文的悬停预览气泡。
 ///
 /// 单独抽成一个具名控件,而不是就地写个 Tooltip:面板上那些 IconButton 的
@@ -442,8 +625,8 @@ class OutlinePanel extends StatefulWidget {
     this.activeLineIndex,
     this.autoExpand = true,
     this.sourceText,
-    this.initialCollapsed,
-    this.onStateChanged,
+    this.foldedIds = const <String>{},
+    this.onFoldChanged,
     this.initialLevel,
     this.onLevelChanged,
     this.onMoveNode,
@@ -463,13 +646,15 @@ class OutlinePanel extends StatefulWidget {
   /// 正文原文。给了就能在悬停标题时预览该章节内容。
   final String? sourceText;
 
-  /// 上次记住的折叠状态(见 outlineIdentities)。
-  final Set<String>? initialCollapsed;
+  /// 已折叠的节(标识集合)。这是**受控属性**:正文折叠和目录折叠共用同一份
+  /// 状态,由调用方持有 —— 否则两处各存一份,在正文里折了目录不会跟着变。
+  final Set<String> foldedIds;
 
-  /// 折叠状态变化时回调,调用方负责持久化。
-  final void Function(Set<String> collapsed)? onStateChanged;
+  /// 用户折叠/展开时回调,调用方负责更新 foldedIds 并持久化。
+  final void Function(Set<String> foldedIds)? onFoldChanged;
 
-  /// 上次记住的「显示到第几级」。null = 全部。
+  /// 上次记住的「显示到第几级」。null = 全部。这只影响目录的显示,
+  /// 不写进 foldedIds —— 它是个视图过滤器,不该顺手把正文也折了。
   final int? initialLevel;
   final void Function(int? level)? onLevelChanged;
 
@@ -482,12 +667,6 @@ class OutlinePanel extends StatefulWidget {
 }
 
 class _OutlinePanelState extends State<OutlinePanel> {
-  /// 折叠状态以**稳定标识**为准,不用行号。
-  ///
-  /// 行号在正文插删行、拖动改结构之后全会变;存行号的话,拖完一节之后
-  /// 记忆会错位到别的标题上,表现为「我没折这个却被折了」。
-  final Set<String> _collapsedIds = {};
-
   /// 「只显示到第 N 级」;null 表示不限制。
   int? _levelLimit;
 
@@ -498,23 +677,50 @@ class _OutlinePanelState extends State<OutlinePanel> {
   /// 附加在当前章节那一行上,用来把它滚进视野。
   final GlobalKey _activeRowKey = GlobalKey();
 
-  /// 每个标题一行的 key,拖拽时要靠它算落点在行的上半还是下半。
+  /// 每个行一个 key(不限标题),拖拽时要靠它算每行在屏幕上的位置。
   final Map<int, GlobalKey> _rowKeys = {};
 
-  /// 最近一次拖拽悬停落在行的下半部(决定插到目标后面)。
+  /// 列表区域的 key,用来把插入线换算到列表的局部坐标。
+  final GlobalKey _listAreaKey = GlobalKey();
+
+  /// 上一次 build 出来的可见行(拖拽时算落点用)。
+  List<OutlineRow> _lastRows = const [];
+
+  /// 正在被拖的节点(非空时显示拖拽相关的界面)。
+  OutlineNode? _draggingNode;
+
+  /// 插入线的位置(相对列表区域的 y)。null = 不显示。
+  double? _dropLineY;
+
+  /// 松手会落到哪个标题的前/后。null = 没有可落的位置。
+  OutlineNode? _dropTarget;
   bool _dropAfter = false;
+
+  /// 落点是否合法(拖进自己子树时为 false,插入线会变红提示)。
+  bool _dropLegal = false;
 
   /// 「复制全部标题」成功后的短暂提示文字。
   String _copyLabel = '';
 
   Map<int, String> get _ids => outlineIdentities(widget.nodes);
 
+  /// 目录实际要折起来的节 = 用户折的 + 层级过滤挡住的。
+  ///
+  /// 层级过滤只在这里叠加,不写回 foldedIds —— 否则选一次「显示到 H1」
+  /// 会连正文也一起折掉。
+  Set<String> get _effectiveFoldedIds {
+    final level = _levelLimit;
+    if (level == null) return widget.foldedIds;
+    return {...widget.foldedIds, ..._idsForLevel(level)};
+  }
+
   /// 当前树下行号形式的折叠集合(渲染用)。
   Set<int> get _collapsedLines {
     final ids = _ids;
+    final folded = _effectiveFoldedIds;
     return {
       for (final e in ids.entries)
-        if (_collapsedIds.contains(e.value)) e.key,
+        if (folded.contains(e.value)) e.key,
     };
   }
 
@@ -522,9 +728,6 @@ class _OutlinePanelState extends State<OutlinePanel> {
   void initState() {
     super.initState();
     _levelLimit = widget.initialLevel;
-    _collapsedIds.addAll(widget.initialCollapsed ?? const <String>{});
-    // 层级限制和逐个折叠是两套状态,层级优先:被限制藏起来的不必再记
-    if (_levelLimit != null) _collapsedIds.addAll(_idsForLevel(_levelLimit!));
     _scheduleRevealActive();
   }
 
@@ -554,42 +757,38 @@ class _OutlinePanelState extends State<OutlinePanel> {
     return out;
   }
 
-  /// 某个节点的祖先链标识(自动展开时要移除它们)。
-  List<String> _ancestorIdsOf(int lineIndex) {
-    final path = <int>[];
-    bool walk(List<OutlineNode> nodes, List<int> acc) {
-      for (final n in nodes) {
-        if (n.lineIndex == lineIndex) {
-          path.addAll(acc);
-          return true;
-        }
-        if (walk(n.children, [...acc, n.lineIndex])) return true;
-      }
-      return false;
-    }
-
-    walk(widget.nodes, const []);
-    final ids = _ids;
-    return [
-      for (final line in path)
-        if (ids[line] != null) ids[line]!,
-    ];
-  }
-
-  /// 把当前折叠状态交给调用方持久化。存的本来就是标识,不必再转换。
-  void _notifyState() => widget.onStateChanged?.call(Set<String>.from(_collapsedIds));
-
   @override
   void didUpdateWidget(OutlinePanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.activeLineIndex != oldWidget.activeLineIndex) {
-      if (widget.activeLineIndex != null && widget.autoExpand) {
+      final active = widget.activeLineIndex;
+      final node = active == null ? null : _currentOutlineOf(active);
+      if (node != null && widget.autoExpand) {
         // 当前章节若被折叠在某个收起的父节点里,先把祖先链展开,
         // 否则高亮的那一行根本不可见 —— 这正是 Quiet Outline 的 auto expand。
-        _collapsedIds.removeAll(_ancestorIdsOf(widget.activeLineIndex!));
+        final unfold = ancestorIdentities(widget.nodes, node)
+            .where(widget.foldedIds.contains)
+            .toSet();
+        if (unfold.isNotEmpty) {
+          final next = {...widget.foldedIds}..removeAll(unfold);
+          // 必须延后一帧:didUpdateWidget 是在**父组件 build 期间**跑的,
+          // 这时候同步回调父组件的 setState 会撞上
+          // 「'!_dirty': is not true」断言(折叠状态改成受控后才踩到)。
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) widget.onFoldChanged?.call(next);
+          });
+        }
       }
       _scheduleRevealActive();
     }
+  }
+
+  /// 按行号找节点(自动展开时要用)。
+  OutlineNode? _currentOutlineOf(int lineIndex) {
+    for (final n in flattenNodes(widget.nodes)) {
+      if (n.lineIndex == lineIndex) return n;
+    }
+    return null;
   }
 
   /// 把当前章节那行滚进视野。要等这一帧布局完成才知道位置。
@@ -614,40 +813,35 @@ class _OutlinePanelState extends State<OutlinePanel> {
 
   void _toggleAll() {
     final all = _parentIds;
-    setState(() {
-      // 已经全折叠 -> 全部展开;否则全部折叠
-      if (all.isNotEmpty && _collapsedIds.length >= all.length) {
-        _collapsedIds.clear();
-      } else {
-        _collapsedIds
-          ..clear()
-          ..addAll(all);
-      }
-      _levelLimit = null;
-    });
+    final folded = widget.foldedIds;
+    // 已经全折叠 -> 全部展开;否则全部折叠
+    final next = (all.isNotEmpty && folded.length >= all.length)
+        ? <String>{}
+        : {...all};
+    setState(() => _levelLimit = null);
     widget.onLevelChanged?.call(null);
-    _notifyState();
+    widget.onFoldChanged?.call(next);
   }
 
   /// 按层级收起:选 H2 就只剩 H1+H2 展开可见。null 为「全部展开」。
+  ///
+  /// 只动层级这个视图过滤器,不碰 foldedIds —— 选一次「显示到 H1」不该
+  /// 把正文也一起折了。
   void _applyLevel(int? level) {
-    setState(() {
-      _levelLimit = level;
-      _collapsedIds
-        ..clear()
-        ..addAll(level == null ? const <String>{} : _idsForLevel(level));
-    });
+    setState(() => _levelLimit = level);
     widget.onLevelChanged?.call(level);
-    _notifyState();
   }
 
   void _toggleNode(int lineIndex) {
     final id = _ids[lineIndex];
     if (id == null) return;
-    setState(() {
-      if (!_collapsedIds.remove(id)) _collapsedIds.add(id);
-    });
-    _notifyState();
+    // 手动折/开就把层级过滤器撤掉:否则「显示到 H1」还压着,
+    // 用户点了三角却看不出任何变化,像坏了。
+    setState(() => _levelLimit = null);
+    widget.onLevelChanged?.call(null);
+    final next = {...widget.foldedIds};
+    if (!next.remove(id)) next.add(id);
+    widget.onFoldChanged?.call(next);
   }
 
   @override
@@ -798,12 +992,7 @@ class _OutlinePanelState extends State<OutlinePanel> {
                     ),
                   ),
                 )
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  itemCount: rows.length,
-                  itemBuilder: (context, i) =>
-                      _buildRow(cs, rows[i], collapsedLines),
-                ),
+              : _buildDropArea(cs, rows, collapsedLines),
         ),
         // 底部:上一个/下一个标题 + 复制全部标题
         if (hasAnyChild) ...[
@@ -962,14 +1151,17 @@ class _OutlinePanelState extends State<OutlinePanel> {
       ),
     );
 
+    // 每行都挂 key:拖拽时靠它量出每行在屏幕上的位置,才能把插入线画准
+    final rowKey = _rowKeys.putIfAbsent(node.lineIndex, () => GlobalKey());
+    Widget result = KeyedSubtree(key: rowKey, child: rowWidget);
+
     // 悬停预览该章节正文(Quiet Outline 的 Hover preview)。
     // 列表项没有章节概念,不挂。
     final src = widget.sourceText;
-    Widget result = rowWidget;
     if (src != null && isHeading) {
       final excerpt = sectionExcerptFor(src, widget.nodes, node);
       if (excerpt.isNotEmpty) {
-        result = SectionPreviewTooltip(excerpt: excerpt, child: rowWidget);
+        result = SectionPreviewTooltip(excerpt: excerpt, child: result);
       }
     }
 
@@ -980,71 +1172,176 @@ class _OutlinePanelState extends State<OutlinePanel> {
     return result;
   }
 
-  /// 拖动落点是否合法:两边都得是标题、不是自己,且目标不在被拖这一节内部
-  /// (拖进自己的子树会形成环)。
-  bool _canDrop(OutlineNode dragged, OutlineNode target) {
+  /// 根据指针位置算落点:吸附到**最近的一条缝隙**。
+  ///
+  /// 缝隙 = 每个可见标题行的上边缘(插到它前面)+ 最后一个可见行的下边缘
+  /// (插到末尾)。这就是 Godot 里拖节点时那条插入线的模型 —— 指针不必精确
+  /// 压在某一行的上半/下半,线会自己吸到最近的位置,松手必定有结果。
+  void _computeDrop(OutlineNode dragged, Offset globalPointer) {
+    final rows = _lastRows;
+    final heads = headingsInOrder(widget.nodes);
     final src = widget.sourceText;
-    if (src == null) return false;
-    if (!dragged.isHeading || !target.isHeading) return false;
-    if (dragged.lineIndex == target.lineIndex) return false;
-    final a = sectionRange(src, widget.nodes, dragged);
-    final b = sectionRange(src, widget.nodes, target);
-    if (a == null || b == null) return false;
-    return !(b.start >= a.start && b.start < a.end);
+    if (rows.isEmpty || heads.isEmpty || src == null) return;
+
+    ({double top, double bottom})? rowBox(int lineIndex) {
+      final box = _rowKeys[lineIndex]?.currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.hasSize) return null;
+      final top = box.localToGlobal(Offset.zero).dy;
+      return (top: top, bottom: top + box.size.height);
+    }
+
+    final slots = <({double y, int slot})>[];
+    for (var i = 0; i < heads.length; i++) {
+      final rb = rowBox(heads[i].lineIndex);
+      if (rb != null) slots.add((y: rb.top, slot: i));
+    }
+    final lastBox = rowBox(rows.last.node.lineIndex);
+    if (lastBox != null) slots.add((y: lastBox.bottom, slot: heads.length));
+    if (slots.isEmpty) return;
+
+    var best = slots.first;
+    for (final s in slots) {
+      if ((s.y - globalPointer.dy).abs() < (best.y - globalPointer.dy).abs()) {
+        best = s;
+      }
+    }
+
+    final after = best.slot >= heads.length;
+    final target = after ? heads.last : heads[best.slot];
+    // 落点落在被拖这一节内部 = 拖回原位或拖进自己子树,不合法。
+    // 这时线会用警示色画出来 —— 总比松手后什么都没发生要好懂。
+    final range = sectionRange(src, widget.nodes, dragged);
+    final offset = after ? src.length : target.charOffset;
+    final legal =
+        range != null && !(offset >= range.start && offset <= range.end);
+
+    final stack = _listAreaKey.currentContext?.findRenderObject();
+    final localY = stack is RenderBox && stack.hasSize
+        ? stack.globalToLocal(Offset(0, best.y)).dy
+        : null;
+
+    if (localY == _dropLineY &&
+        target.lineIndex == _dropTarget?.lineIndex &&
+        after == _dropAfter &&
+        legal == _dropLegal) {
+      return; // 位置没变就别 setState,免得拖动时每帧重建整棵树
+    }
+    setState(() {
+      _dropLineY = localY;
+      _dropTarget = target;
+      _dropAfter = after;
+      _dropLegal = legal;
+    });
+  }
+
+  void _clearDrop() {
+    if (_dropLineY == null && _draggingNode == null) return;
+    setState(() {
+      _dropLineY = null;
+      _dropTarget = null;
+      _dropLegal = false;
+      _draggingNode = null;
+    });
+  }
+
+  /// 目录列表 + 整个列表范围都是拖放区。
+  ///
+  /// 为什么要**一整块** DragTarget 而不是每行一个:按行做的话,松手时指针
+  /// 稍微偏到行外(行间、列表上下留白、末尾空白)就没有目标接住,拖了半天
+  /// 什么都没发生 —— 这正是「拖拽有点问题」的主要来源。
+  Widget _buildDropArea(
+    ColorScheme cs,
+    List<OutlineRow> rows,
+    Set<int> collapsedLines,
+  ) {
+    // 供 _computeDrop 使用:拖拽回调发生在两帧之间,那时拿不到当次的 rows
+    _lastRows = rows;
+
+    final canDrag = widget.onMoveNode != null && widget.sourceText != null;
+    final list = ListView.builder(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      itemCount: rows.length,
+      itemBuilder: (context, i) => _buildRow(cs, rows[i], collapsedLines),
+    );
+
+    if (!canDrag) return list;
+
+    return DragTarget<OutlineNode>(
+      onMove: (d) => _computeDrop(d.data, d.offset),
+      onLeave: (_) {
+        if (_dropLineY != null) setState(() => _dropLineY = null);
+      },
+      onWillAcceptWithDetails: (d) => d.data.isHeading,
+      onAcceptWithDetails: (d) {
+        final target = _dropTarget;
+        final legal = _dropLegal;
+        final after = _dropAfter;
+        _clearDrop();
+        // 不合法就别调回调 —— 界面上那条警示色的线已经说明了原因
+        if (target == null || !legal) return;
+        widget.onMoveNode!(d.data, target, after);
+      },
+      builder: (ctx, candidate, rejected) {
+        return Stack(
+          key: _listAreaKey,
+          children: [
+            list,
+            // 插入线:Godot 式的一条横线,明确告诉你松手会落到哪
+            if (_dropLineY != null)
+              Positioned(
+                left: 2,
+                right: 2,
+                top: _dropLineY! < 0 ? 0 : _dropLineY!,
+                child: IgnorePointer(
+                  child: Container(
+                    key: const ValueKey('outline-drop-line'),
+                    height: 2,
+                    decoration: BoxDecoration(
+                      color: _dropLegal ? cs.primary : cs.error,
+                      borderRadius: BorderRadius.circular(1),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
   }
 
   Widget _wrapDraggable(Widget row, ColorScheme cs, OutlineNode node) {
-    final key = _rowKeys.putIfAbsent(node.lineIndex, () => GlobalKey());
-    return DragTarget<OutlineNode>(
-      onWillAcceptWithDetails: (d) => _canDrop(d.data, node),
-      onMove: (d) {
-        // 落在这一行的上半还是下半,决定插到目标前面还是后面
-        final box = key.currentContext?.findRenderObject();
-        if (box is RenderBox && box.hasSize) {
-          final local = box.globalToLocal(d.offset);
-          _dropAfter = local.dy > box.size.height / 2;
-        }
-      },
-      onAcceptWithDetails: (d) => widget.onMoveNode!(d.data, node, _dropAfter),
-      builder: (ctx, candidate, rejected) {
-        final hovering = candidate.isNotEmpty;
-        return Draggable<OutlineNode>(
-          data: node,
-          dragAnchorStrategy: pointerDragAnchorStrategy,
-          feedback: Material(
-            color: Colors.transparent,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: cs.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: cs.primary),
-              ),
-              child: Text(
-                node.text,
-                style: TextStyle(fontSize: 12, color: cs.onSurface),
-              ),
+    return Draggable<OutlineNode>(
+      data: node,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      onDragStarted: () => setState(() => _draggingNode = node),
+      onDragEnd: (_) => _clearDrop(),
+      onDraggableCanceled: (_, __) => _clearDrop(),
+      feedback: Material(
+        color: Colors.transparent,
+        child: Opacity(
+          opacity: 0.9,
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: cs.primary),
+            ),
+            child: Text(
+              node.text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: cs.onSurface),
             ),
           ),
-          childWhenDragging: Opacity(opacity: 0.35, child: row),
-          child: Container(
-            key: key,
-            decoration: hovering
-                ? BoxDecoration(
-                    border: Border(
-                      top: BorderSide(
-                          color: _dropAfter ? Colors.transparent : cs.primary,
-                          width: 2),
-                      bottom: BorderSide(
-                          color: _dropAfter ? cs.primary : Colors.transparent,
-                          width: 2),
-                    ),
-                  )
-                : null,
-            child: row,
-          ),
-        );
-      },
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: row),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        child: row,
+      ),
     );
   }
 }

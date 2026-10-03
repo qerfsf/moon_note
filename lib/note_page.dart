@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:markdown/markdown.dart' as md;
 import 'package:file_picker/file_picker.dart';
 import 'database.dart';
 import 'image_service.dart';
@@ -95,9 +94,42 @@ class _NotePageState extends State<NotePage> {
 
   /// 记住的目录状态(Quiet Outline 的 Remember state)。
   /// 折叠状态用稳定标识而不是行号,见 outlineIdentities。
+  ///
+  /// 这份折叠状态是**目录和正文共用**的唯一真相:两边任一处折了,另一处
+  /// 立刻跟着变。所以面板的折叠是受控属性,不是它自己内部的 state。
   Set<String> _outlineCollapsed = {};
   int? _outlineLevel;
-  bool _outlineStateLoaded = false;
+
+  /// 折叠状态变一次加一,用来让预览的缓存失效(正文没变但折叠变了)。
+  int _foldVersion = 0;
+  int _lastPreviewFoldVersion = -1;
+
+  /// 预览里当前可见的标题(折叠之后剩下的),按文档顺序。
+  /// 行号在折叠后已经变了,所以用这个列表把渲染出的标题认回原节点。
+  List<OutlineNode> _previewVisibleHeadings = const [];
+
+  /// 当前正文的节点标识表(行号 -> 标识),预览里判断标题是否被折叠用。
+  Map<int, String> _previewIds = const {};
+
+  /// 当前正文里「有内容可折」的节点标识,预览里决定某个标题要不要画折叠箭头。
+  Set<String> _previewFoldable = const {};
+
+  void _setOutlineFolded(Set<String> folded) {
+    setState(() {
+      _outlineCollapsed = folded;
+      _foldVersion++;
+    });
+    _saveOutlineCollapsed(folded);
+  }
+
+  /// 在正文里点标题旁边的折叠箭头。
+  void _toggleBodyFold(OutlineNode node) {
+    final id = _previewIds[node.lineIndex];
+    if (id == null) return;
+    final next = {..._outlineCollapsed};
+    if (!next.remove(id)) next.add(id);
+    _setOutlineFolded(next);
+  }
 
   /// 预览区滚动控制器(跳转要用),以及每个标题的锚点 key。
   final ScrollController _previewScroll = ScrollController();
@@ -119,38 +151,38 @@ class _NotePageState extends State<NotePage> {
     return _outline;
   }
 
-  /// 文档顺序下所有标题在整篇里的序号 —— 预览渲染时按同样顺序生成锚点,
-  /// 所以这个序号能对上(围栏代码块内的 # 两边都被忽略,顺序一致)。
-  int _headingOrdinalOf(OutlineNode target) {
-    var i = 0;
-    int? found;
-    void walk(List<OutlineNode> nodes) {
-      for (final n in nodes) {
-        if (found != null) return;
-        if (n.isHeading) {
-          if (identical(n, target) || n.lineIndex == target.lineIndex) {
-            found = i;
-            return;
-          }
-          i++;
-        }
-        walk(n.children);
-      }
-    }
-
-    walk(_currentOutline());
-    return found ?? -1;
-  }
+  /// 目标标题在**当前预览**里可见标题中的序号。
+  ///
+  /// 不能再用「全文标题序号」:折叠之后子标题不再渲染,序号会整体错位,
+  /// 点目录会跳到别的标题上。可见列表是渲染时同步算出来的,能对上。
+  int _visibleHeadingIndex(OutlineNode target) =>
+      _previewVisibleHeadings.indexWhere(
+          (n) => identical(n, target) || n.lineIndex == target.lineIndex);
 
   /// 点击大纲:预览态滚动到对应标题;编辑态把光标移到那一行。
   Future<void> _jumpToOutlineNode(OutlineNode node) async {
     if (_isPreviewing) {
-      final ordinal = _headingOrdinalOf(node);
+      var ordinal = _visibleHeadingIndex(node);
+      if (ordinal < 0) {
+        // 目标正被折叠在某个收起的节里:先把祖先链展开,下一帧再跳。
+        // 否则点目录没反应,用户会以为目录坏了。
+        final unfold = ancestorIdentities(_currentOutline(), node)
+            .where(_outlineCollapsed.contains)
+            .toSet();
+        if (unfold.isNotEmpty) {
+          _setOutlineFolded({..._outlineCollapsed}..removeAll(unfold));
+          await WidgetsBinding.instance.endOfFrame; // 等这一帧重建出锚点
+          if (!mounted) return;
+          ordinal = _visibleHeadingIndex(node);
+        }
+      }
       if (ordinal >= 0 && ordinal < _previewHeadingKeys.length) {
-        final ctx = _previewHeadingKeys[ordinal].currentContext;
-        if (ctx != null) {
+        // 注意在 await 之后才取 currentContext:跨 await 拿着旧的 BuildContext
+        // 用既不稳(期间可能已经重建),也会被 use_build_context_synchronously 拦。
+        final target = _previewHeadingKeys[ordinal].currentContext;
+        if (target != null && mounted) {
           await Scrollable.ensureVisible(
-            ctx,
+            target,
             duration: const Duration(milliseconds: 220),
             alignment: 0.06,
           );
@@ -214,12 +246,8 @@ class _NotePageState extends State<NotePage> {
         onClose: () => setState(() => _showOutline = false),
         activeLineIndex: _headingLineIndexByOrdinal(_activeHeadingOrdinal),
         sourceText: _contentController.text,
-        initialCollapsed:
-            _outlineStateLoaded ? _outlineCollapsed : null,
-        onStateChanged: (c) {
-          _outlineCollapsed = c;
-          _saveOutlineCollapsed(c);
-        },
+        foldedIds: _outlineCollapsed,
+        onFoldChanged: _setOutlineFolded,
         initialLevel: _outlineLevel,
         onLevelChanged: (lv) {
           _outlineLevel = lv;
@@ -306,7 +334,6 @@ class _NotePageState extends State<NotePage> {
       _outlineCollapsed = (savedCollapsed == null || savedCollapsed.isEmpty)
           ? <String>{}
           : savedCollapsed.split('\n').where((s) => s.isNotEmpty).toSet();
-      _outlineStateLoaded = true;
     });
   }
 
@@ -1535,22 +1562,45 @@ class _NotePageState extends State<NotePage> {
     final chars = content.length;
     if (_contentVersion == _lastPreviewVersion &&
         _fontSize == _lastPreviewFontSize &&
+        _foldVersion == _lastPreviewFoldVersion &&
         _cachedPreview != null) {
       return _cachedPreview!;
     }
     _lastPreviewVersion = _contentVersion;
     _lastPreviewFontSize = _fontSize;
+    _lastPreviewFoldVersion = _foldVersion;
     // 预览重建时一并重建标题锚点(目录跳转要靠它们定位)
     _previewHeadingKeys = [];
-    var headingOrdinal = 0;
 
     // Parse todo items manually (more reliable than MarkdownBody checkboxBuilder)
     final taskRegex = RegExp(r'^[-*]\s*\[([ xX])\]\s+(.+)$', multiLine: true);
     final taskMatches = taskRegex.allMatches(content).toList();
     final hasTodos = taskMatches.isNotEmpty;
 
-    // Build clean content with todo lines replaced (keep structure)
-    final cleanContent = content.replaceAll(taskRegex, '');
+    // 正文自己也能折叠:被折叠的节只留标题行,正文和子标题都不渲染。
+    //
+    // 顺序很关键:先按折叠切(此时坐标还是原文的坐标),**再**把待办行抹掉。
+    // 反过来做的话,抹掉待办行会让后面所有行的偏移前移,折叠的切点就对不上了。
+    final outlineNodes = _currentOutline();
+    _previewIds = outlineIdentities(outlineNodes);
+    final folded =
+        foldSectionsForPreview(content, outlineNodes, _outlineCollapsed);
+    _previewVisibleHeadings = folded.headings;
+    _previewFoldable = folded.foldable;
+    final cleanContent = folded.text.replaceAll(taskRegex, '');
+    final headingBuilder = FoldableHeadingBuilder(
+      keys: _previewHeadingKeys,
+      visibleHeadings: _previewVisibleHeadings,
+      isFoldable: (n) {
+        final id = _previewIds[n.lineIndex];
+        return id != null && _previewFoldable.contains(id);
+      },
+      isFolded: (n) {
+        final id = _previewIds[n.lineIndex];
+        return id != null && _outlineCollapsed.contains(id);
+      },
+      onToggleFold: _toggleBodyFold,
+    );
 
     final cs = Theme.of(context).colorScheme;
     _cachedPreview = Column(
@@ -1682,9 +1732,12 @@ class _NotePageState extends State<NotePage> {
                     builders: {
                       // ```copy 围栏渲染成带一键复制的框;其它代码块返回 null 走默认渲染
                       'code': CopyBlockBuilder(),
+                      // 标题:挂锚点 + 折叠箭头,正文自己也能展开收起。
+                      // 六个标题标签**共用同一个 builder 实例** —— 它内部有个
+                      // 顺序计数器,按渲染顺序认标题;每个标签各建一个实例的话
+                      // 计数器都从 0 开始,会和 h1 抢同一个 GlobalKey。
                       for (final tag in const ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-                        tag: _HeadingAnchorBuilder(
-                            _previewHeadingKeys, () => headingOrdinal++),
+                        tag: headingBuilder,
                     },
                     imageBuilder: (uri, title, alt) {
                       // 1) 应用内图片引用(跨设备同步使用): moonimage:<id>
@@ -1970,29 +2023,4 @@ class _CheckerPainter extends CustomPainter {
       oldDelegate.light != light ||
       oldDelegate.dark != dark ||
       oldDelegate.cell != cell;
-}
-
-/// 给预览里的标题挂锚点,让目录点击时能精确滚动过去。
-///
-/// flutter_markdown 不暴露标题对应的源码行号,所以按「文档顺序的第 N 个标题」对齐:
-/// 解析大纲时用同样顺序数标题,两边就能对上(围栏代码块里的 # 双方都忽略,
-/// 顺序不会错位)。样式沿用 preferredStyle,观感和默认渲染一致。
-class _HeadingAnchorBuilder extends MarkdownElementBuilder {
-  _HeadingAnchorBuilder(this.keys, this.nextOrdinal);
-
-  final List<GlobalKey> keys;
-  final int Function() nextOrdinal;
-
-  @override
-  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
-    final ordinal = nextOrdinal();
-    while (keys.length <= ordinal) {
-      keys.add(GlobalKey());
-    }
-    return Container(
-      key: keys[ordinal],
-      padding: const EdgeInsets.only(top: 8, bottom: 2),
-      child: Text(element.textContent, style: preferredStyle),
-    );
-  }
 }
