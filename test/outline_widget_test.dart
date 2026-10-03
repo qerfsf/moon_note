@@ -8,6 +8,8 @@ Future<void> pumpPanel(
   required List<OutlineNode> nodes,
   void Function(OutlineNode)? onTapNode,
   VoidCallback? onClose,
+  int? activeLineIndex,
+  bool autoExpand = true,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -19,6 +21,8 @@ Future<void> pumpPanel(
             nodes: nodes,
             onTapNode: onTapNode ?? (_) {},
             onClose: onClose,
+            activeLineIndex: activeLineIndex,
+            autoExpand: autoExpand,
           ),
         ),
       ),
@@ -268,6 +272,86 @@ void main() {
       await pumpPanel(tester, nodes: parseOutline('# 甲\n# 乙\n'));
       expect(find.text('全部'), findsNothing);
       expect(find.byIcon(Icons.arrow_drop_down), findsNothing);
+    });
+  });
+
+  group('OutlinePanel 跟随当前章节', () {
+    testWidgets('当前章节被折叠时,自动把它所在的祖先链展开', (tester) async {
+      final nodes = parseOutline(_doc);
+      final entry = nodes[0].children[0].children[0]; // 条目 A(在「一节」下)
+
+      // 先把「第一章」折叠起来,条目 A 被藏
+      await pumpPanel(tester, nodes: nodes);
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_down).first);
+      await tester.pumpAndSettle();
+      expect(find.text('条目 A'), findsNothing);
+
+      // 正文读到「条目 A」-> 目录必须能显示它,否则高亮无从谈起
+      await pumpPanel(tester, nodes: nodes, activeLineIndex: entry.lineIndex);
+      await tester.pumpAndSettle();
+
+      expect(find.text('条目 A'), findsOneWidget);
+      expect(find.text('一节'), findsOneWidget); // 中间层也展开了
+    });
+
+    testWidgets('autoExpand 为 false 时不擅自展开', (tester) async {
+      final nodes = parseOutline(_doc);
+      final entry = nodes[0].children[0].children[0];
+
+      await pumpPanel(tester, nodes: nodes);
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_down).first);
+      await tester.pumpAndSettle();
+
+      await pumpPanel(
+        tester,
+        nodes: nodes,
+        activeLineIndex: entry.lineIndex,
+        autoExpand: false,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('条目 A'), findsNothing); // 用户折的就保持折着
+    });
+
+    testWidgets('当前章节那一行加粗高亮,其它行不变', (tester) async {
+      final nodes = parseOutline(_doc);
+      final entry = nodes[0].children[0].children[0]; // 条目 A,列表项默认 w400
+
+      await pumpPanel(tester, nodes: nodes);
+      expect(
+        tester.widget<Text>(find.text('条目 A')).style?.fontWeight,
+        FontWeight.w400,
+      );
+
+      await pumpPanel(tester, nodes: nodes, activeLineIndex: entry.lineIndex);
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.widget<Text>(find.text('条目 A')).style?.fontWeight,
+        FontWeight.w600,
+      );
+      // 别的列表项不受影响
+      expect(
+        tester.widget<Text>(find.text('二节')).style?.fontWeight,
+        FontWeight.w600, // 标题本来就是 w600
+      );
+    });
+
+    testWidgets('activeLineIndex 为 null 时不崩、不高亮', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc), activeLineIndex: null);
+      await tester.pumpAndSettle();
+      expect(find.text('第一章'), findsOneWidget);
+      expect(
+        tester.widget<Text>(find.text('条目 A')).style?.fontWeight,
+        FontWeight.w400,
+      );
+    });
+
+    testWidgets('当前章节是标题本身时也能高亮', (tester) async {
+      final nodes = parseOutline(_doc);
+      await pumpPanel(tester, nodes: nodes, activeLineIndex: nodes[0].lineIndex);
+      await tester.pumpAndSettle();
+      expect(find.text('第一章'), findsOneWidget);
     });
   });
 

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:markdown/markdown.dart' as md;
@@ -88,6 +89,13 @@ class _NotePageState extends State<NotePage> {
   final ScrollController _previewScroll = ScrollController();
   List<GlobalKey> _previewHeadingKeys = [];
 
+  /// 正文里当前读到的章节(标题在全文里的序号)。预览态滚动时更新,
+  /// 目录据此高亮那一行并自动展开它的祖先链。
+  ///
+  /// 编辑态不跟随 —— 这正是 Quiet Outline 的「No auto-expand when editing」:
+  /// 打字时目录跟着乱跳比不跳更烦人。
+  int _activeHeadingOrdinal = -1;
+
   /// 取当前正文对应的大纲(带缓存)。
   List<OutlineNode> _currentOutline() {
     if (_outlineVersion != _contentVersion) {
@@ -164,6 +172,7 @@ class _NotePageState extends State<NotePage> {
         nodes: _currentOutline(),
         onTapNode: _jumpToOutlineNode,
         onClose: () => setState(() => _showOutline = false),
+        activeLineIndex: _headingLineIndexByOrdinal(_activeHeadingOrdinal),
       ),
     );
   }
@@ -172,6 +181,8 @@ class _NotePageState extends State<NotePage> {
   Future<void> _toggleOutline() async {
     if (_isWideLayout(context)) {
       setState(() => _showOutline = !_showOutline);
+      _saveOutlineOpen();
+      if (_showOutline) _syncActiveHeading();
       return;
     }
     await showOutlineSheet(
@@ -188,6 +199,8 @@ class _NotePageState extends State<NotePage> {
     _contentController = TextEditingController();
     _loadContent();
     _loadViewMode();
+    _loadOutlineOpen();
+    _previewScroll.addListener(_onPreviewScroll);
     _loadFontSize();
     _loadImageSetting();
     if (widget.initialTitle == '未命名') {
@@ -213,6 +226,90 @@ class _NotePageState extends State<NotePage> {
     if (result.isNotEmpty) {
       setState(() => _isPreviewing = result.first['value'] == 'preview');
     }
+  }
+
+  /// 宽屏下目录默认就是常驻的一栏(像 Obsidian 的右侧栏那样),
+  /// 而不是每次打开笔记都要点一下;用户关掉后记住选择。
+  Future<void> _loadOutlineOpen() async {
+    final db = await DatabaseHelper.instance.database;
+    final result = await db.query(
+      'app_settings',
+      where: 'key = ?',
+      whereArgs: ['outline_open'],
+    );
+    if (!mounted) return;
+    final saved = result.isEmpty ? null : result.first['value'] as String?;
+    setState(() => _showOutline = saved == null ? true : saved == '1');
+  }
+
+  Future<void> _saveOutlineOpen() async {
+    final db = await DatabaseHelper.instance.database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+      ['outline_open', _showOutline ? '1' : '0'],
+    );
+  }
+
+  /// 预览区滚动 -> 判断当前读到哪个标题。
+  ///
+  /// 用 RenderAbstractViewport.getOffsetToReveal 求「把该标题顶到视口顶部
+  /// 所需的目标滚动量」,取最后一个不超过当前滚动量的标题 —— 比逐帧比较
+  /// 全局坐标稳,也不受嵌套滚动影响。
+  void _onPreviewScroll() {
+    if (!_isPreviewing || _previewHeadingKeys.isEmpty) return;
+    final scroll = _previewScroll.hasClients ? _previewScroll.offset : 0.0;
+    var active = -1;
+    for (var i = 0; i < _previewHeadingKeys.length; i++) {
+      final ctx = _previewHeadingKeys[i].currentContext;
+      if (ctx == null) continue;
+      final box = ctx.findRenderObject();
+      if (box is! RenderBox || !box.attached) continue;
+      final viewport = RenderAbstractViewport.maybeOf(box);
+      if (viewport == null) continue;
+      if (viewport.getOffsetToReveal(box, 0.0).offset <= scroll + 8) {
+        active = i;
+      } else {
+        break; // 标题按文档顺序取出,一旦超过就可以停了
+      }
+    }
+    if (active == _activeHeadingOrdinal) return;
+    setState(() => _activeHeadingOrdinal = active);
+  }
+
+  /// 由标题序号反查它在大纲里的 lineIndex(用于高亮)。
+  int? _headingLineIndexByOrdinal(int ordinal) {
+    if (ordinal < 0) return null;
+    var i = 0;
+    int? found;
+    void walk(List<OutlineNode> nodes) {
+      for (final n in nodes) {
+        if (found != null) return;
+        if (n.isHeading) {
+          if (i == ordinal) {
+            found = n.lineIndex;
+            return;
+          }
+          i++;
+        }
+        walk(n.children);
+      }
+    }
+
+    walk(_currentOutline());
+    return found;
+  }
+
+  /// 切换预览/编辑时同步跟随状态:进预览立刻定位当前章节,退出则清掉高亮。
+  void _syncActiveHeading() {
+    if (!_isPreviewing) {
+      if (_activeHeadingOrdinal != -1) {
+        setState(() => _activeHeadingOrdinal = -1);
+      }
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _onPreviewScroll();
+    });
   }
 
   Future<void> _saveViewMode() async {
@@ -949,6 +1046,7 @@ class _NotePageState extends State<NotePage> {
                 if (!_isPreviewing) _doSave();
                 setState(() => _isPreviewing = !_isPreviewing);
                 _saveViewMode();
+                _syncActiveHeading();
               },
             ),
             PopupMenuButton<String>(
@@ -1635,6 +1733,7 @@ class _NotePageState extends State<NotePage> {
     _titleController.dispose();
     _contentController.dispose();
     _titleFocusNode.dispose();
+    _previewScroll.removeListener(_onPreviewScroll);
     _previewScroll.dispose();
     _contentFocusNode.dispose();
     _findController.dispose();
@@ -1730,6 +1829,7 @@ class _NotePageState extends State<NotePage> {
               if (!_isPreviewing) _doSave();
               setState(() => _isPreviewing = !_isPreviewing);
               _saveViewMode();
+              _syncActiveHeading();
             },
           ),
         ],

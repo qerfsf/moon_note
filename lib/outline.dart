@@ -219,12 +219,20 @@ class OutlinePanel extends StatefulWidget {
     required this.onTapNode,
     this.onClose,
     this.title = '目录',
+    this.activeLineIndex,
+    this.autoExpand = true,
   });
 
   final List<OutlineNode> nodes;
   final void Function(OutlineNode node) onTapNode;
   final VoidCallback? onClose;
   final String title;
+
+  /// 正文里当前所在章节的标题(对应 OutlineNode.lineIndex),用来高亮。
+  final int? activeLineIndex;
+
+  /// 当前章节变化时自动展开它的祖先链(Quiet Outline 的 auto expand)。
+  final bool autoExpand;
 
   @override
   State<OutlinePanel> createState() => _OutlinePanelState();
@@ -239,6 +247,61 @@ class _OutlinePanelState extends State<OutlinePanel> {
   /// 过滤关键字(大小写不敏感)。
   final TextEditingController _filterController = TextEditingController();
   String _filter = '';
+
+  /// 附加在当前章节那一行上,用来把它滚进视野。
+  final GlobalKey _activeRowKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleRevealActive();
+  }
+
+  @override
+  void didUpdateWidget(OutlinePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.activeLineIndex != oldWidget.activeLineIndex) {
+      if (widget.activeLineIndex != null && widget.autoExpand) {
+        // 当前章节若被折叠在某个收起的父节点里,先把祖先链展开,
+        // 否则高亮的那一行根本不可见 —— 这正是 Quiet Outline 的 auto expand。
+        final anc = _ancestorsOf(widget.activeLineIndex!);
+        if (anc.any(_collapsed.contains)) _collapsed.removeAll(anc);
+      }
+      _scheduleRevealActive();
+    }
+  }
+
+  /// 把当前章节那行滚进视野。要等这一帧布局完成才知道位置。
+  void _scheduleRevealActive() {
+    if (widget.activeLineIndex == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _activeRowKey.currentContext;
+      if (ctx == null || !mounted) return;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 180),
+        alignment: 0.4,
+      );
+    });
+  }
+
+  /// 求某个节点的祖先 lineIndex 链(不含自己)。
+  List<int> _ancestorsOf(int lineIndex) {
+    final path = <int>[];
+    bool walk(List<OutlineNode> nodes, List<int> acc) {
+      for (final n in nodes) {
+        if (n.lineIndex == lineIndex) {
+          path.addAll(acc);
+          return true;
+        }
+        if (walk(n.children, [...acc, n.lineIndex])) return true;
+      }
+      return false;
+    }
+
+    walk(widget.nodes, const []);
+    return path;
+  }
 
   @override
   void dispose() {
@@ -455,14 +518,21 @@ class _OutlinePanelState extends State<OutlinePanel> {
     final node = row.node;
     final collapsed = _collapsed.contains(node.lineIndex);
     final isHeading = node.isHeading;
+    final isActive = widget.activeLineIndex != null &&
+        node.lineIndex == widget.activeLineIndex;
     final fontSize = isHeading
         ? (node.level == 1 ? 13.5 : (node.level == 2 ? 13.0 : 12.5))
         : 12.5;
-    final color = isHeading ? cs.onSurface : cs.onSurfaceVariant;
+    final color = isActive
+        ? cs.primary
+        : (isHeading ? cs.onSurface : cs.onSurfaceVariant);
 
     return InkWell(
+      key: isActive ? _activeRowKey : null,
       onTap: () => widget.onTapNode(node),
-      child: Padding(
+      child: Container(
+        // 当前章节整行加淡底,让人一眼看到读到哪了
+        color: isActive ? cs.primary.withAlpha(26) : null,
         padding: EdgeInsets.only(
           left: 4.0 + row.depth * 12.0,
           right: 8,
@@ -495,7 +565,7 @@ class _OutlinePanelState extends State<OutlinePanel> {
                 height: 12,
                 margin: const EdgeInsets.only(right: 5),
                 decoration: BoxDecoration(
-                  color: cs.primary.withAlpha(110),
+                  color: (isActive ? cs.primary : cs.primary.withAlpha(110)),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -506,7 +576,9 @@ class _OutlinePanelState extends State<OutlinePanel> {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: fontSize,
-                  fontWeight: isHeading ? FontWeight.w600 : FontWeight.w400,
+                  fontWeight: isHeading || isActive
+                      ? FontWeight.w600
+                      : FontWeight.w400,
                   color: color,
                 ),
               ),
