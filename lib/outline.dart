@@ -614,6 +614,37 @@ class SectionPreviewTooltip extends StatelessWidget {
   }
 }
 
+/// 按**正文内容**记忆大纲解析结果的小缓存。
+///
+/// 缓存键必须是正文本身,不能是「正文变一次加一」的版本号:给
+/// TextEditingController 赋值**不会**触发 TextField 的 onChanged,所以任何一条
+/// 改了正文却没递增版本号的路径(异步加载、撤销/重做、查找替换)都会让目录
+/// 永远停在旧结果上。
+///
+/// 踩过的具体后果:首帧 IndexedStack 会同时构建编辑器与预览,预览里调了一次
+/// 解析,那时正文**还没从数据库加载出来**,于是缓存了一份空大纲;正文随后到位
+/// 但版本号没变,缓存永不失效 —— 整个目录一直是空的,折叠箭头也全都消失。
+class OutlineCache {
+  OutlineCache([String source = ''])
+      : _source = source,
+        _nodes = parseOutline(source);
+
+  String _source;
+  List<OutlineNode> _nodes;
+
+  /// 取 [text] 对应的大纲;内容没变就直接复用上次的结果。
+  List<OutlineNode> of(String text) {
+    if (!identical(_source, text) && _source != text) {
+      _source = text;
+      _nodes = parseOutline(text);
+    }
+    return _nodes;
+  }
+
+  /// 当前缓存对应的正文。
+  String get source => _source;
+}
+
 /// 大纲面板:分级折叠 + 点击导航。电脑端放在右侧,手机端放进底部弹层。
 class OutlinePanel extends StatefulWidget {
   const OutlinePanel({

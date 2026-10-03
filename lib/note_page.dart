@@ -52,7 +52,12 @@ class _NotePageState extends State<NotePage> {
   Timer? _saveDebounce;
   bool _isUndoRedo = false;
   int _contentVersion = 0;
-  int _lastPreviewVersion = -1;
+
+  /// 预览缓存的键:上一次构建预览用的**正文本身**。
+  ///
+  /// 同样不能用版本号:异步加载、撤销/重做、查找替换都会改正文却不递增
+  /// 版本号,那样预览会停在旧内容上(加载完还显示「暂无内容」)。
+  String _lastPreviewText = '';
   double _lastPreviewFontSize = 0;
   Widget? _cachedPreview;
 
@@ -77,8 +82,8 @@ class _NotePageState extends State<NotePage> {
   bool _showOutline = false;
 
   /// 已解析的大纲;内容变化时按版本号重算,避免每帧都解析。
-  List<OutlineNode> _outline = const [];
-  int _outlineVersion = -1;
+  /// 已解析的大纲缓存(键是正文本身)。
+  final OutlineCache _outlineCache = OutlineCache();
 
   /// 宽屏阈值:宽于它就用右侧固定面板,窄屏(手机)改用底部弹层。
   /// 760 = 面板 220 + 正文约 540,比这更窄就放不下了。
@@ -142,14 +147,11 @@ class _NotePageState extends State<NotePage> {
   /// 打字时目录跟着乱跳比不跳更烦人。
   int _activeHeadingOrdinal = -1;
 
-  /// 取当前正文对应的大纲(带缓存)。
-  List<OutlineNode> _currentOutline() {
-    if (_outlineVersion != _contentVersion) {
-      _outline = parseOutline(_contentController.text);
-      _outlineVersion = _contentVersion;
-    }
-    return _outline;
-  }
+  /// 取当前正文对应的大纲。
+  ///
+  /// 缓存键是**正文本身**(见 OutlineCache),不是版本号 —— 版本号只要有一条
+  /// 改正文的路径忘了递增就会让目录永远停在旧结果上。
+  List<OutlineNode> _currentOutline() => _outlineCache.of(_contentController.text);
 
   /// 目标标题在**当前预览**里可见标题中的序号。
   ///
@@ -498,6 +500,9 @@ class _NotePageState extends State<NotePage> {
       _contentController.text = content;
       _loadedContent = content;
     }
+    // 正文到位后必须重建一次:给 controller 赋值不会触发 onChanged,而首帧
+    // 已经用**空正文**构建过目录和预览了。不重建的话它们会停在空结果上。
+    if (mounted) setState(() {});
     _undoStack.clear();
     _undoStack.add(_contentController.text);
   }
@@ -1560,13 +1565,14 @@ class _NotePageState extends State<NotePage> {
   Widget _buildPreview() {
     final content = _contentController.text;
     final chars = content.length;
-    if (_contentVersion == _lastPreviewVersion &&
-        _fontSize == _lastPreviewFontSize &&
-        _foldVersion == _lastPreviewFoldVersion &&
-        _cachedPreview != null) {
-      return _cachedPreview!;
+    if (identical(content, _lastPreviewText) || content == _lastPreviewText) {
+      if (_fontSize == _lastPreviewFontSize &&
+          _foldVersion == _lastPreviewFoldVersion &&
+          _cachedPreview != null) {
+        return _cachedPreview!;
+      }
     }
-    _lastPreviewVersion = _contentVersion;
+    _lastPreviewText = content;
     _lastPreviewFontSize = _fontSize;
     _lastPreviewFoldVersion = _foldVersion;
     // 预览重建时一并重建标题锚点(目录跳转要靠它们定位)

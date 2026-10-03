@@ -86,6 +86,50 @@ void main() {
     });
   });
 
+  group('OutlineCache 缓存键必须是正文本身', () {
+    test('正文没变就复用解析结果(同一个 List 实例)', () {
+      final cache = OutlineCache('# 甲\n- 条目\n');
+      final a = cache.of('# 甲\n- 条目\n');
+      final b = cache.of('# 甲\n- 条目\n');
+      expect(identical(a, b), isTrue);
+      expect(a.length, 1);
+    });
+
+    test('正文变了就重新解析', () {
+      final cache = OutlineCache('# 甲\n');
+      expect(cache.of('# 甲\n').length, 1);
+      expect(cache.of('# 甲\n# 乙\n').length, 2);
+      expect(cache.of('').length, 0);
+    });
+
+    test('回归:先缓存了「还没加载出来」的空正文,正文随后到位也要能给出结果', () {
+      // 这就是那个 bug 的现场:首帧正文是空的(异步加载还没回来),解析并缓存了
+      // 空大纲;随后正文到位,但**没有任何版本号变化**。缓存键若是版本号,这里
+      // 就会一直返回空列表 —— 目录整个空掉,折叠箭头也全没有。
+      final cache = OutlineCache();
+      expect(cache.of(''), isEmpty);
+
+      final nodes = cache.of('# 功能演示\n正文\n\n## 一、目录\n- 条目\n');
+      expect(nodes.length, 1);
+      expect(nodes.first.text, '功能演示');
+      expect(nodes.first.children.length, 1);
+    });
+
+    test('内容相同但换了字符串实例时不重复解析(按值比较)', () {
+      final cache = OutlineCache();
+      final a = cache.of('# 甲\n');
+      final b = cache.of('# 甲\n'.substring(0)); // 新实例,内容相同
+      expect(identical(a, b), isTrue);
+    });
+
+    test('source 反映当前缓存对应的正文', () {
+      final cache = OutlineCache('# 甲\n');
+      expect(cache.source, '# 甲\n');
+      cache.of('# 乙\n');
+      expect(cache.source, '# 乙\n');
+    });
+  });
+
   group('headingsInOrder', () {
     test('按文档顺序只返回标题', () {
       final heads = headingsInOrder(parseOutline(_doc));
