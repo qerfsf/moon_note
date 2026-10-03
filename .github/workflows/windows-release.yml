@@ -34,6 +34,24 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
+      # 诊断:这个工作流在 v3.2.0 / v3.2.1 / v3.2.2 三次都在 "Build Windows
+      # release" 秒失败,报的是 CMake 找不到 "Visual Studio 16 2019" 生成器。
+      # 那是 flutter_tools 的兜底值(visual_studio.dart 的 cmakeGenerator:
+      # 只有认出 17/18 才给对生成器,其余一律给 2019),也就是它没能正确识别
+      # runner 上的 Visual Studio。这里把判断依据打印出来,便于定位。
+      - name: Diagnose Visual Studio toolchain
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          Write-Host "vswhere 存在: $(Test-Path $vswhere)"
+          Write-Host '--- vswhere: 所有实例 ---'
+          & $vswhere -all -products * -format json -utf8
+          Write-Host '--- vswhere: 带 C++ x64 工具集的最新实例 ---'
+          & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Write-Host '--- flutter doctor -v(Flutter 自己看到的 VS 版本)---'
+          flutter doctor -v
+
       - name: Build Windows release
         run: flutter build windows --release
 
