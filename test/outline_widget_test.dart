@@ -153,6 +153,124 @@ void main() {
     });
   });
 
+  group('OutlinePanel 过滤搜索', () {
+    testWidgets('输入关键字后只剩命中的条目', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+      expect(find.text('章节'), findsNothing);
+
+      await tester.enterText(find.byType(TextField), '条目');
+      await tester.pumpAndSettle();
+
+      expect(find.text('条目 A'), findsOneWidget);
+      expect(find.text('二节'), findsNothing);
+      expect(find.text('第二章'), findsNothing);
+      // 命中的是列表项,祖先链(第一章/一节)必须保留,否则层级断了
+      expect(find.text('第一章'), findsOneWidget);
+      expect(find.text('一节'), findsOneWidget);
+      expect(find.text('2'), findsNothing);
+      expect(find.text('3'), findsOneWidget); // 命中 1 条 + 2 级祖先 = 3 行
+    });
+
+    testWidgets('过滤时命中项即使原本被折叠也会显示出来', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+
+      // 先把「第一章」折叠起来(条目 A 被藏)
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_down).first);
+      await tester.pumpAndSettle();
+      expect(find.text('条目 A'), findsNothing);
+
+      // 再搜索它 —— 应该能搜到,而不是「搜了却没结果」
+      await tester.enterText(find.byType(TextField), '条目');
+      await tester.pumpAndSettle();
+
+      expect(find.text('条目 A'), findsOneWidget);
+    });
+
+    testWidgets('没有命中时给出提示而不是留空', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+      await tester.enterText(find.byType(TextField), 'zzz不存在');
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('没有匹配'), findsOneWidget);
+      expect(find.text('第一章'), findsNothing);
+    });
+
+    testWidgets('点清除按钮恢复完整目录', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+      await tester.enterText(find.byType(TextField), '条目');
+      await tester.pumpAndSettle();
+      expect(find.text('第二章'), findsNothing);
+
+      // 过滤生效后输入框右侧出现清除按钮
+      await tester.tap(find.byIcon(Icons.close).last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('第二章'), findsOneWidget);
+      expect(find.text('条目 A'), findsOneWidget);
+      expect(find.text('5'), findsOneWidget);
+    });
+  });
+
+  group('OutlinePanel 按层级收起', () {
+    testWidgets('选「显示到 H1」后只剩根标题', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+      expect(find.text('全部'), findsOneWidget);
+
+      await tester.tap(find.text('全部'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('显示到 H1'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('第一章'), findsOneWidget);
+      expect(find.text('第二章'), findsOneWidget);
+      expect(find.text('一节'), findsNothing);
+      expect(find.text('条目 A'), findsNothing);
+      expect(find.text('H1'), findsOneWidget); // 按钮标签跟着变
+    });
+
+    testWidgets('选「显示到 H2」后能看到 H2,但 H3 以下仍收起', (tester) async {
+      // 这份文档里 条目 A 是「一节」的子节点,选 H2 时它下面不该展开
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+
+      await tester.tap(find.text('全部'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('显示到 H2'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('第一章'), findsOneWidget);
+      expect(find.text('一节'), findsOneWidget);
+      expect(find.text('二节'), findsOneWidget);
+      expect(find.text('条目 A'), findsNothing); // 列表项比 H2 更深
+      expect(find.text('H2'), findsOneWidget);
+    });
+
+    testWidgets('「全部展开」能把层级限制撤掉(哨兵值 0 的回归)', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+
+      await tester.tap(find.text('全部'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('显示到 H1'));
+      await tester.pumpAndSettle();
+      expect(find.text('条目 A'), findsNothing);
+
+      // value=null 会被 PopupMenuButton 当成取消菜单,所以这里用的是 0
+      await tester.tap(find.text('H1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('全部展开'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('条目 A'), findsOneWidget);
+      expect(find.text('5'), findsOneWidget);
+      expect(find.text('全部'), findsOneWidget);
+    });
+
+    testWidgets('没有层级结构时不显示层级按钮', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline('# 甲\n# 乙\n'));
+      expect(find.text('全部'), findsNothing);
+      expect(find.byIcon(Icons.arrow_drop_down), findsNothing);
+    });
+  });
+
   group('OutlinePanel 点击导航', () {
     testWidgets('点列表项把对应节点回传出去,偏移能定位到正文那一行', (tester) async {
       OutlineNode? tapped;

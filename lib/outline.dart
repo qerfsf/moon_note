@@ -163,6 +163,54 @@ List<OutlineRow> flattenOutline(List<OutlineNode> nodes, Set<int> collapsed) {
   return rows;
 }
 
+/// 计算「只显示到第 [level] 级」需要折叠哪些节点。
+///
+/// 折叠所有 **层级 >= level 且有子节点** 的节点:
+/// level=1 时根标题自身被折叠,于是只剩 H1;level=2 时根保持展开、
+/// H2 收起,于是看到 H1+H2。列表项的 level 是 100+缩进,恒 >= 任何标题层级,
+/// 所以选 H2 时列表也会一并收起,不会被漏掉。
+Set<int> collapseForLevel(List<OutlineNode> nodes, int level) {
+  final out = <int>{};
+  void walk(List<OutlineNode> list) {
+    for (final n in list) {
+      if (n.hasChildren && n.level >= level) out.add(n.lineIndex);
+      walk(n.children);
+    }
+  }
+
+  walk(nodes);
+  return out;
+}
+
+/// 按关键字过滤大纲:保留文字命中的节点**及其所有祖先**(否则层级会断掉),
+/// 其余丢弃。关键字为空时原样返回。
+///
+/// 返回的是新建的节点副本 —— 直接改原节点的 children 会污染调用方的树。
+List<OutlineNode> filterOutline(List<OutlineNode> nodes, String query) {
+  final q = query.trim().toLowerCase();
+  if (q.isEmpty) return nodes;
+
+  List<OutlineNode> walk(List<OutlineNode> list) {
+    final kept = <OutlineNode>[];
+    for (final n in list) {
+      final kids = walk(n.children);
+      if (n.text.toLowerCase().contains(q) || kids.isNotEmpty) {
+        final copy = OutlineNode(
+          lineIndex: n.lineIndex,
+          charOffset: n.charOffset,
+          level: n.level,
+          text: n.text,
+          isHeading: n.isHeading,
+        )..children.addAll(kids);
+        kept.add(copy);
+      }
+    }
+    return kept;
+  }
+
+  return walk(nodes);
+}
+
 /// 大纲面板:分级折叠 + 点击导航。电脑端放在右侧,手机端放进底部弹层。
 class OutlinePanel extends StatefulWidget {
   const OutlinePanel({
@@ -185,6 +233,19 @@ class OutlinePanel extends StatefulWidget {
 class _OutlinePanelState extends State<OutlinePanel> {
   final Set<int> _collapsed = {};
 
+  /// 「只显示到第 N 级」;null 表示不限制。
+  int? _levelLimit;
+
+  /// 过滤关键字(大小写不敏感)。
+  final TextEditingController _filterController = TextEditingController();
+  String _filter = '';
+
+  @override
+  void dispose() {
+    _filterController.dispose();
+    super.dispose();
+  }
+
   void _collectParents(List<OutlineNode> nodes, Set<int> into) {
     for (final n in nodes) {
       if (n.hasChildren) {
@@ -206,6 +267,19 @@ class _OutlinePanelState extends State<OutlinePanel> {
           ..clear()
           ..addAll(all);
       }
+      _levelLimit = null;
+    });
+  }
+
+  /// 按层级收起:选 H2 就只剩 H1+H2 展开可见。null 为「全部展开」。
+  void _applyLevel(int? level) {
+    setState(() {
+      _levelLimit = level;
+      _collapsed
+        ..clear()
+        ..addAll(level == null
+            ? const <int>{}
+            : collapseForLevel(widget.nodes, level));
     });
   }
 
@@ -218,7 +292,10 @@ class _OutlinePanelState extends State<OutlinePanel> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final rows = flattenOutline(widget.nodes, _collapsed);
+    final filtering = _filter.trim().isNotEmpty;
+    final tree = filtering ? filterOutline(widget.nodes, _filter) : widget.nodes;
+    // 过滤时强制展开,否则命中的节点可能被折叠状态藏起来,看着像没搜到
+    final rows = flattenOutline(tree, filtering ? const <int>{} : _collapsed);
     final hasAnyChild = _collectCount(widget.nodes) > 0;
 
     return Column(
@@ -259,16 +336,100 @@ class _OutlinePanelState extends State<OutlinePanel> {
             ],
           ),
         ),
+        // 第二行:层级收起 + 过滤
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 0, 6, 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  height: 28,
+                  child: TextField(
+                    controller: _filterController,
+                    onChanged: (v) => setState(() => _filter = v),
+                    style: TextStyle(fontSize: 12, color: cs.onSurface),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      filled: true,
+                      fillColor: cs.surfaceContainerHighest.withAlpha(90),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      hintText: '过滤…',
+                      hintStyle: TextStyle(fontSize: 12, color: cs.outline),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide(color: cs.outlineVariant),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6),
+                        borderSide: BorderSide(color: cs.outlineVariant),
+                      ),
+                      suffixIcon: filtering
+                          ? InkWell(
+                              onTap: () {
+                                _filterController.clear();
+                                setState(() => _filter = '');
+                              },
+                              child: Icon(Icons.close,
+                                  size: 14, color: cs.outline),
+                            )
+                          : null,
+                      suffixIconConstraints:
+                          const BoxConstraints(minWidth: 24, minHeight: 24),
+                    ),
+                  ),
+                ),
+              ),
+              if (hasAnyChild) ...[
+                const SizedBox(width: 4),
+                PopupMenuButton<int>(
+                  tooltip: '只显示到第几级',
+                  initialValue: _levelLimit ?? 0,
+                  // 用 0 当「全部」的哨兵:PopupMenuButton 会把 value=null 视作
+                  // 取消菜单,直接不回调 onSelected,那样「全部展开」会点不动。
+                  onSelected: (v) => _applyLevel(v == 0 ? null : v),
+                  itemBuilder: (ctx) => [
+                    for (var i = 1; i <= 6; i++)
+                      PopupMenuItem<int>(value: i, child: Text('显示到 H$i')),
+                    const PopupMenuItem<int>(value: 0, child: Text('全部展开')),
+                  ],
+                  child: Container(
+                    height: 28,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: cs.outlineVariant),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _levelLimit == null ? '全部' : 'H$_levelLimit',
+                          style: TextStyle(fontSize: 11.5, color: cs.onSurface),
+                        ),
+                        Icon(Icons.arrow_drop_down, size: 14, color: cs.outline),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
         Divider(height: 0.5, thickness: 0.5, color: cs.outlineVariant),
         Expanded(
-          child: widget.nodes.isEmpty
+          child: tree.isEmpty
               ? Center(
                   child: Padding(
                     padding: const EdgeInsets.all(20),
                     child: Text(
-                      '这篇笔记还没有目录\n\n用 # 标题或 - 列表来建立结构',
+                      filtering
+                          ? '没有匹配「$_filter」的条目'
+                          : '这篇笔记还没有目录\n\n用 # 标题或 - 列表来建立结构',
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 12, color: cs.outline, height: 1.6),
+                      style:
+                          TextStyle(fontSize: 12, color: cs.outline, height: 1.6),
                     ),
                   ),
                 )

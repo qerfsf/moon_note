@@ -12,7 +12,111 @@ String dump(List<OutlineNode> nodes, [int depth = 0]) {
   return sb.toString();
 }
 
+// ── 按层级收起(Quiet Outline 的「显示到 H1/H2/…」) ──
+
+void _levelTests() {
+  const doc = '''
+# 第一章
+## 一节
+### 小节
+- 条目
+## 二节
+# 第二章
+''';
+
+  test('level=1 时收起所有根标题 => 只剩 H1', () {
+    final nodes = parseOutline(doc);
+    final collapsed = collapseForLevel(nodes, 1);
+    final rows = flattenOutline(nodes, collapsed);
+    expect(rows.map((r) => r.node.text), ['第一章', '第二章']);
+  });
+
+  test('level=2 时根保持展开 => 看到 H1 和 H2', () {
+    final nodes = parseOutline(doc);
+    final rows = flattenOutline(nodes, collapseForLevel(nodes, 2));
+    expect(rows.map((r) => r.node.text),
+        ['第一章', '一节', '二节', '第二章']);
+  });
+
+  test('level=3 时能看到 H3', () {
+    final nodes = parseOutline(doc);
+    final rows = flattenOutline(nodes, collapseForLevel(nodes, 3));
+    expect(rows.map((r) => r.node.text),
+        ['第一章', '一节', '小节', '二节', '第二章']);
+  });
+
+  test('level 很大时全部展开', () {
+    final nodes = parseOutline(doc);
+    final rows = flattenOutline(nodes, collapseForLevel(nodes, 99));
+    expect(rows.length, 6);
+    expect(rows.map((r) => r.node.text).contains('条目'), isTrue);
+  });
+
+  test('列表项层级恒大于标题,所以选 H2 时嵌套列表也会被收起', () {
+    final nodes = parseOutline(doc);
+    final rows = flattenOutline(nodes, collapseForLevel(nodes, 2));
+    expect(rows.map((r) => r.node.text).contains('条目'), isFalse);
+  });
+
+  test('没有子节点时返回空集合', () {
+    expect(collapseForLevel(parseOutline('# 甲\n# 乙\n'), 2), isEmpty);
+  });
+
+  // ── 过滤搜索 ──
+
+  test('过滤保留命中的节点及它的祖先', () {
+    final nodes = parseOutline(doc);
+    final hits = filterOutline(nodes, '小节');
+    expect(hits.length, 1); // 只剩「第一章」
+    expect(hits.first.text, '第一章');
+    expect(hits.first.children.length, 1); // -> 一节
+    expect(hits.first.children.first.children.single.text, '小节');
+  });
+
+  test('过滤命中多个分支时各自保留自己的祖先链', () {
+    final nodes = parseOutline(doc);
+    final hits = filterOutline(nodes, '节');
+    expect(hits.map((n) => n.text), contains('第一章'));
+    // 「二节」也要在(它自己命中)
+    final texts = <String>[];
+    void walk(List<OutlineNode> l) {
+      for (final n in l) {
+        texts.add(n.text);
+        walk(n.children);
+      }
+    }
+
+    walk(hits);
+    expect(texts, contains('二节'));
+  });
+
+  test('过滤大小写不敏感', () {
+    final nodes = parseOutline('# Hello World\n## 其他\n');
+    expect(filterOutline(nodes, 'hello').length, 1);
+    expect(filterOutline(nodes, 'HELLO').length, 1);
+  });
+
+  test('关键字为空时原样返回同一棵树', () {
+    final nodes = parseOutline(doc);
+    expect(identical(filterOutline(nodes, ''), nodes), isTrue);
+    expect(identical(filterOutline(nodes, '   '), nodes), isTrue);
+  });
+
+  test('没有命中时返回空列表', () {
+    expect(filterOutline(parseOutline(doc), '不存在的词'), isEmpty);
+  });
+
+  test('过滤不会污染原树(返回的是副本)', () {
+    final nodes = parseOutline(doc);
+    final before = nodes.first.children.length;
+    filterOutline(nodes, '小节');
+    expect(nodes.first.children.length, before);
+  });
+}
+
 void main() {
+  group('按层级收起与过滤', _levelTests);
+
   group('parseOutline', () {
     test('标题分层:# > ## > ###', () {
       final md = '# A\n## B\n### C\n## D\n# E\n';
