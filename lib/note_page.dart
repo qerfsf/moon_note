@@ -82,8 +82,16 @@ class _NotePageState extends State<NotePage> {
   int _outlineVersion = -1;
 
   /// 宽屏阈值:宽于它就用右侧固定面板,窄屏(手机)改用底部弹层。
-  static const double _outlineWideWidth = 820;
+  /// 760 = 面板 220 + 正文约 540,比这更窄就放不下了。
+  static const double _outlineWideWidth = 760;
   static const double _outlinePanelWidth = 220;
+
+  /// 笔记页实际分到的宽度。
+  ///
+  /// 不能用 MediaQuery 的窗口宽度:笔记页也会被嵌进首页的右侧分栏
+  /// (home_page 的 embedded:true),那时窗口 1280 但这一栏可能只有五六百,
+  /// 按窗口宽度判断会在窄栏里硬塞一个侧栏。
+  double _bodyWidth = 0;
 
   /// 预览区滚动控制器(跳转要用),以及每个标题的锚点 key。
   final ScrollController _previewScroll = ScrollController();
@@ -156,9 +164,11 @@ class _NotePageState extends State<NotePage> {
     _contentFocusNode.requestFocus();
   }
 
-  /// 宽屏(电脑端)才用常驻侧栏。
-  bool _isWideLayout(BuildContext context) =>
-      MediaQuery.of(context).size.width >= _outlineWideWidth;
+  /// 宽屏(电脑端)才用常驻侧栏。优先用实测到的本页宽度。
+  bool _isWideLayout(BuildContext context) {
+    final w = _bodyWidth > 0 ? _bodyWidth : MediaQuery.of(context).size.width;
+    return w >= _outlineWideWidth;
+  }
 
   Widget _buildOutlinePanel() {
     return Container(
@@ -1760,15 +1770,22 @@ class _NotePageState extends State<NotePage> {
       ],
     );
     // 电脑端:目录常驻右侧;窄屏不占位,改用 AppBar 的目录按钮弹层
-    if (_showOutline && _isWideLayout(context)) {
-      return Row(
-        children: [
-          Expanded(child: content),
-          _buildOutlinePanel(),
-        ],
-      );
-    }
-    return content;
+    // 电脑端:目录常驻右侧;窄屏不占位,改用 AppBar 的目录按钮弹层。
+    // 用 LayoutBuilder 量本页真实宽度,而不是窗口宽度 —— 嵌入分栏时两者不同。
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _bodyWidth = constraints.maxWidth;
+        if (_showOutline && constraints.maxWidth >= _outlineWideWidth) {
+          return Row(
+            children: [
+              Expanded(child: content),
+              _buildOutlinePanel(),
+            ],
+          );
+        }
+        return content;
+      },
+    );
   }
 
   @override
