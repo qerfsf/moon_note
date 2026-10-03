@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// 大纲节点:标题(#/##/###)或列表项(- / * / 1.)。
 ///
@@ -167,8 +168,11 @@ List<OutlineRow> flattenOutline(List<OutlineNode> nodes, Set<int> collapsed) {
 ///
 /// 折叠所有 **层级 >= level 且有子节点** 的节点:
 /// level=1 时根标题自身被折叠,于是只剩 H1;level=2 时根保持展开、
-/// H2 收起,于是看到 H1+H2。列表项的 level 是 100+缩进,恒 >= 任何标题层级,
-/// 所以选 H2 时列表也会一并收起,不会被漏掉。
+/// H2 收起,于是看到 H1+H2。
+///
+/// 注意列表项的 level 是**缩进深度**(1 起,2 空格算一级),不是 100+深度 ——
+/// 后者只是 parseOutline 内部的排序键。所以顶层列表项的 level 就是 1,
+/// 与 H1 同级;它之所以在「显示到 H1」时看不见,是因为父标题被折叠了。
 Set<int> collapseForLevel(List<OutlineNode> nodes, int level) {
   final out = <int>{};
   void walk(List<OutlineNode> list) {
@@ -211,6 +215,131 @@ List<OutlineNode> filterOutline(List<OutlineNode> nodes, String query) {
   return walk(nodes);
 }
 
+/// 按文档顺序把整棵树展平(用于求「下一个标题」「复制全部标题」这类顺序操作)。
+List<OutlineNode> flattenNodes(List<OutlineNode> nodes) {
+  final out = <OutlineNode>[];
+  void walk(List<OutlineNode> list) {
+    for (final n in list) {
+      out.add(n);
+      walk(n.children);
+    }
+  }
+
+  walk(nodes);
+  return out;
+}
+
+/// 只取标题,按文档顺序。
+List<OutlineNode> headingsInOrder(List<OutlineNode> nodes) =>
+    flattenNodes(nodes).where((n) => n.isHeading).toList();
+
+/// 给每个节点算一个**稳定标识**,用来持久化折叠状态。
+///
+/// 不能用 lineIndex:正文里插删一行,后面所有行号都会漂。也不能只用文字:
+/// 同名标题会互相干扰。所以用「类型+层级|文字」,同名的按出现次序加 #2 #3
+/// 后缀 —— 在别处插删标题不会打乱其它标题的记忆。
+///
+/// 标识里带类型前缀(h/l)是必须的:列表项的 level 是缩进深度,顶层列表项
+/// 的 level 就是 1,和 H1 相同,不区分类型的话「# 甲」和「- 甲」会撞成同一个。
+Map<int, String> outlineIdentities(List<OutlineNode> nodes) {
+  final seen = <String, int>{};
+  final out = <int, String>{};
+  for (final n in flattenNodes(nodes)) {
+    final base = '${n.isHeading ? 'h' : 'l'}${n.level}|${n.text}';
+    final dup = seen[base] ?? 0;
+    seen[base] = dup + 1;
+    out[n.lineIndex] = dup == 0 ? base : '$base#$dup';
+  }
+  return out;
+}
+
+/// 把大纲导出成 Markdown 文本(缩进体现层级),用于「复制标题」。
+/// [includeListItems] 为 false 时只导出 `#` 标题。
+String outlineToMarkdown(List<OutlineNode> nodes,
+    {bool includeListItems = false}) {
+  final sb = StringBuffer();
+  void walk(List<OutlineNode> list, int depth) {
+    for (final n in list) {
+      if (n.isHeading) {
+        sb.writeln('${'#' * n.level} ${n.text}');
+      } else if (includeListItems) {
+        sb.writeln('${'  ' * depth}- ${n.text}');
+      }
+      walk(n.children, n.isHeading ? 0 : depth + 1);
+    }
+  }
+
+  walk(nodes, 0);
+  return sb.toString().trimRight();
+}
+
+/// 取某个标题所在章节的正文摘要 —— 从它自己到**下一个同级或更高级标题**
+/// 之前,去掉标题那一行,超长截断。悬停预览用。
+///
+/// 列表项没有「章节」概念,返回空串(调用方据此不显示预览)。
+String sectionExcerptFor(
+  String markdown,
+  List<OutlineNode> nodes,
+  OutlineNode target, {
+  int maxChars = 200,
+}) {
+  if (!target.isHeading) return '';
+  final flat = flattenNodes(nodes);
+  final idx = flat.indexWhere((n) => n.lineIndex == target.lineIndex);
+  if (idx < 0) return '';
+
+  var end = markdown.length;
+  for (var i = idx + 1; i < flat.length; i++) {
+    final n = flat[i];
+    if (n.isHeading && n.level <= target.level) {
+      end = n.charOffset;
+      break;
+    }
+  }
+  final start = target.charOffset.clamp(0, markdown.length);
+  final stop = end.clamp(start, markdown.length);
+  final lines = markdown.substring(start, stop).split('\n');
+  // 第一行是标题本身,预览要的是正文
+  var body = lines.skip(1).join('\n').trim();
+  if (body.length > maxChars) {
+    body = '${body.substring(0, maxChars)}…';
+  }
+  return body;
+}
+
+/// 章节正文的悬停预览气泡。
+///
+/// 单独抽成一个具名控件,而不是就地写个 Tooltip:面板上那些 IconButton 的
+/// tooltip 属性内部也是 Tooltip,混在一起后按类型根本分不出谁是谁
+/// (写测试时踩过这个坑)。
+class SectionPreviewTooltip extends StatelessWidget {
+  const SectionPreviewTooltip({
+    super.key,
+    required this.excerpt,
+    required this.child,
+  });
+
+  final String excerpt;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: excerpt,
+      waitDuration: const Duration(milliseconds: 450),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      textStyle: TextStyle(fontSize: 12, color: cs.onSurface, height: 1.5),
+      constraints: const BoxConstraints(maxWidth: 320),
+      child: child,
+    );
+  }
+}
+
 /// 大纲面板:分级折叠 + 点击导航。电脑端放在右侧,手机端放进底部弹层。
 class OutlinePanel extends StatefulWidget {
   const OutlinePanel({
@@ -221,6 +350,11 @@ class OutlinePanel extends StatefulWidget {
     this.title = '目录',
     this.activeLineIndex,
     this.autoExpand = true,
+    this.sourceText,
+    this.initialCollapsed,
+    this.onStateChanged,
+    this.initialLevel,
+    this.onLevelChanged,
   });
 
   final List<OutlineNode> nodes;
@@ -233,6 +367,19 @@ class OutlinePanel extends StatefulWidget {
 
   /// 当前章节变化时自动展开它的祖先链(Quiet Outline 的 auto expand)。
   final bool autoExpand;
+
+  /// 正文原文。给了就能在悬停标题时预览该章节内容。
+  final String? sourceText;
+
+  /// 上次记住的折叠状态(见 outlineIdentities)。
+  final Set<String>? initialCollapsed;
+
+  /// 折叠状态变化时回调,调用方负责持久化。
+  final void Function(Set<String> collapsed)? onStateChanged;
+
+  /// 上次记住的「显示到第几级」。null = 全部。
+  final int? initialLevel;
+  final void Function(int? level)? onLevelChanged;
 
   @override
   State<OutlinePanel> createState() => _OutlinePanelState();
@@ -251,10 +398,42 @@ class _OutlinePanelState extends State<OutlinePanel> {
   /// 附加在当前章节那一行上,用来把它滚进视野。
   final GlobalKey _activeRowKey = GlobalKey();
 
+  /// 「复制全部标题」成功后的短暂提示文字。
+  String _copyLabel = '';
+
   @override
   void initState() {
     super.initState();
+    _levelLimit = widget.initialLevel;
+    _restoreCollapsed();
+    if (_levelLimit != null) {
+      _collapsed
+        ..clear()
+        ..addAll(collapseForLevel(widget.nodes, _levelLimit!));
+    }
     _scheduleRevealActive();
+  }
+
+  /// 把持久化的稳定标识还原成 lineIndex 集合。
+  /// 找不到的标识直接忽略(标题被删或被改名了)。
+  void _restoreCollapsed() {
+    final saved = widget.initialCollapsed;
+    if (saved == null || saved.isEmpty) return;
+    final ids = outlineIdentities(widget.nodes);
+    for (final entry in ids.entries) {
+      if (saved.contains(entry.value)) _collapsed.add(entry.key);
+    }
+  }
+
+  /// 把当前折叠状态交给调用方持久化。
+  void _notifyState() {
+    final cb = widget.onStateChanged;
+    if (cb == null) return;
+    final ids = outlineIdentities(widget.nodes);
+    cb({
+      for (final line in _collapsed)
+        if (ids[line] != null) ids[line]!,
+    });
   }
 
   @override
@@ -332,6 +511,8 @@ class _OutlinePanelState extends State<OutlinePanel> {
       }
       _levelLimit = null;
     });
+    widget.onLevelChanged?.call(null);
+    _notifyState();
   }
 
   /// 按层级收起:选 H2 就只剩 H1+H2 展开可见。null 为「全部展开」。
@@ -344,12 +525,15 @@ class _OutlinePanelState extends State<OutlinePanel> {
             ? const <int>{}
             : collapseForLevel(widget.nodes, level));
     });
+    widget.onLevelChanged?.call(level);
+    _notifyState();
   }
 
   void _toggleNode(int lineIndex) {
     setState(() {
       if (!_collapsed.remove(lineIndex)) _collapsed.add(lineIndex);
     });
+    _notifyState();
   }
 
   @override
@@ -502,8 +686,79 @@ class _OutlinePanelState extends State<OutlinePanel> {
                   itemBuilder: (context, i) => _buildRow(cs, rows[i]),
                 ),
         ),
+        // 底部:上一个/下一个标题 + 复制全部标题
+        if (hasAnyChild) ...[
+          Divider(height: 0.5, thickness: 0.5, color: cs.outlineVariant),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 2, 4, 2),
+            child: Row(
+              children: [
+                // 刻意不用 keyboard_arrow_down/up:那是折叠三角的图标,
+                // 同一个面板里两套控件用同一个图标,既混淆用户也会让
+                // 按图标定位的测试分不清谁是谁。
+                _footerBtn(cs, Icons.arrow_upward, '上一个标题', _goPrev),
+                _footerBtn(cs, Icons.arrow_downward, '下一个标题', _goNext),
+                const Spacer(),
+                _copyLabel.isEmpty
+                    ? _footerBtn(cs, Icons.copy_all_outlined, '复制全部标题', _copyAll)
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        child: Text(
+                          _copyLabel,
+                          style: TextStyle(fontSize: 11, color: cs.primary),
+                        ),
+                      ),
+              ],
+            ),
+          ),
+        ],
       ],
     );
+  }
+
+  Widget _footerBtn(
+    ColorScheme cs,
+    IconData icon,
+    String tip,
+    VoidCallback onTap,
+  ) {
+    return IconButton(
+      icon: Icon(icon, size: 16, color: cs.outline),
+      tooltip: tip,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 28, minHeight: 26),
+      padding: EdgeInsets.zero,
+      onPressed: onTap,
+    );
+  }
+
+  /// 跳到相邻标题。没有当前章节时,「下一个」从第一个标题开始。
+  void _goStep(int delta) {
+    final heads = headingsInOrder(widget.nodes);
+    if (heads.isEmpty) return;
+    final curIdx = _activeHeadingIndex(heads);
+    var next = curIdx < 0 ? (delta > 0 ? 0 : heads.length - 1) : curIdx + delta;
+    if (next < 0) next = heads.length - 1; // 到头了绕回,省得点了没反应
+    if (next >= heads.length) next = 0;
+    widget.onTapNode(heads[next]);
+  }
+
+  int _activeHeadingIndex(List<OutlineNode> heads) {
+    if (widget.activeLineIndex == null) return -1;
+    return heads.indexWhere((n) => n.lineIndex == widget.activeLineIndex);
+  }
+
+  void _goPrev() => _goStep(-1);
+  void _goNext() => _goStep(1);
+
+  Future<void> _copyAll() async {
+    final text = outlineToMarkdown(widget.nodes);
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    final n = headingsInOrder(widget.nodes).length;
+    setState(() => _copyLabel = '已复制 $n 个标题');
+    await Future.delayed(const Duration(milliseconds: 1400));
+    if (mounted) setState(() => _copyLabel = '');
   }
 
   int _collectCount(List<OutlineNode> nodes) {
@@ -527,7 +782,7 @@ class _OutlinePanelState extends State<OutlinePanel> {
         ? cs.primary
         : (isHeading ? cs.onSurface : cs.onSurfaceVariant);
 
-    return InkWell(
+    final rowWidget = InkWell(
       key: isActive ? _activeRowKey : null,
       onTap: () => widget.onTapNode(node),
       child: Container(
@@ -587,6 +842,15 @@ class _OutlinePanelState extends State<OutlinePanel> {
         ),
       ),
     );
+
+    // 悬停预览该章节正文(Quiet Outline 的 Hover preview)。
+    // 列表项没有章节概念,不挂。
+    final src = widget.sourceText;
+    if (src == null || !isHeading) return rowWidget;
+    final excerpt = sectionExcerptFor(src, widget.nodes, node);
+    if (excerpt.isEmpty) return rowWidget;
+
+    return SectionPreviewTooltip(excerpt: excerpt, child: rowWidget);
   }
 }
 

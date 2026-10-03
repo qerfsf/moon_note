@@ -93,6 +93,12 @@ class _NotePageState extends State<NotePage> {
   /// 按窗口宽度判断会在窄栏里硬塞一个侧栏。
   double _bodyWidth = 0;
 
+  /// 记住的目录状态(Quiet Outline 的 Remember state)。
+  /// 折叠状态用稳定标识而不是行号,见 outlineIdentities。
+  Set<String> _outlineCollapsed = {};
+  int? _outlineLevel;
+  bool _outlineStateLoaded = false;
+
   /// 预览区滚动控制器(跳转要用),以及每个标题的锚点 key。
   final ScrollController _previewScroll = ScrollController();
   List<GlobalKey> _previewHeadingKeys = [];
@@ -183,6 +189,18 @@ class _NotePageState extends State<NotePage> {
         onTapNode: _jumpToOutlineNode,
         onClose: () => setState(() => _showOutline = false),
         activeLineIndex: _headingLineIndexByOrdinal(_activeHeadingOrdinal),
+        sourceText: _contentController.text,
+        initialCollapsed:
+            _outlineStateLoaded ? _outlineCollapsed : null,
+        onStateChanged: (c) {
+          _outlineCollapsed = c;
+          _saveOutlineCollapsed(c);
+        },
+        initialLevel: _outlineLevel,
+        onLevelChanged: (lv) {
+          _outlineLevel = lv;
+          _saveOutlineLevel(lv);
+        },
       ),
     );
   }
@@ -209,7 +227,7 @@ class _NotePageState extends State<NotePage> {
     _contentController = TextEditingController();
     _loadContent();
     _loadViewMode();
-    _loadOutlineOpen();
+    _loadOutlineState();
     _previewScroll.addListener(_onPreviewScroll);
     _loadFontSize();
     _loadImageSetting();
@@ -240,16 +258,30 @@ class _NotePageState extends State<NotePage> {
 
   /// 宽屏下目录默认就是常驻的一栏(像 Obsidian 的右侧栏那样),
   /// 而不是每次打开笔记都要点一下;用户关掉后记住选择。
-  Future<void> _loadOutlineOpen() async {
+  ///
+  /// 同时恢复「显示到第几级」和折叠状态 —— Quiet Outline 的 Remember state。
+  /// 折叠状态按**稳定标识**存(见 outlineIdentities),不是行号:
+  /// 正文里插删一行会让行号整体漂移,存行号下次就全错位了。
+  Future<void> _loadOutlineState() async {
     final db = await DatabaseHelper.instance.database;
-    final result = await db.query(
-      'app_settings',
-      where: 'key = ?',
-      whereArgs: ['outline_open'],
-    );
+    final rows = await db.query('app_settings');
+    final map = {
+      for (final r in rows) r['key'] as String: r['value'] as String?,
+    };
+    final savedOpen = map['outline_open'];
+    final savedLevel = map['outline_level'];
+    final savedCollapsed = map['outline_collapsed_${widget.noteId}'];
     if (!mounted) return;
-    final saved = result.isEmpty ? null : result.first['value'] as String?;
-    setState(() => _showOutline = saved == null ? true : saved == '1');
+    setState(() {
+      _showOutline = savedOpen == null ? true : savedOpen == '1';
+      _outlineLevel = (savedLevel == null || savedLevel == 'all')
+          ? null
+          : int.tryParse(savedLevel);
+      _outlineCollapsed = (savedCollapsed == null || savedCollapsed.isEmpty)
+          ? <String>{}
+          : savedCollapsed.split('\n').where((s) => s.isNotEmpty).toSet();
+      _outlineStateLoaded = true;
+    });
   }
 
   Future<void> _saveOutlineOpen() async {
@@ -257,6 +289,22 @@ class _NotePageState extends State<NotePage> {
     await db.rawInsert(
       'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
       ['outline_open', _showOutline ? '1' : '0'],
+    );
+  }
+
+  Future<void> _saveOutlineLevel(int? level) async {
+    final db = await DatabaseHelper.instance.database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+      ['outline_level', level == null ? 'all' : '$level'],
+    );
+  }
+
+  Future<void> _saveOutlineCollapsed(Set<String> collapsed) async {
+    final db = await DatabaseHelper.instance.database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+      ['outline_collapsed_${widget.noteId}', collapsed.join('\n')],
     );
   }
 

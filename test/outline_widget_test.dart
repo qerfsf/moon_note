@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:moon_note/outline.dart';
 
@@ -10,6 +11,11 @@ Future<void> pumpPanel(
   VoidCallback? onClose,
   int? activeLineIndex,
   bool autoExpand = true,
+  String? sourceText,
+  Set<String>? initialCollapsed,
+  void Function(Set<String>)? onStateChanged,
+  int? initialLevel,
+  void Function(int?)? onLevelChanged,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -23,6 +29,11 @@ Future<void> pumpPanel(
             onClose: onClose,
             activeLineIndex: activeLineIndex,
             autoExpand: autoExpand,
+            sourceText: sourceText,
+            initialCollapsed: initialCollapsed,
+            onStateChanged: onStateChanged,
+            initialLevel: initialLevel,
+            onLevelChanged: onLevelChanged,
           ),
         ),
       ),
@@ -352,6 +363,229 @@ void main() {
       await pumpPanel(tester, nodes: nodes, activeLineIndex: nodes[0].lineIndex);
       await tester.pumpAndSettle();
       expect(find.text('第一章'), findsOneWidget);
+    });
+  });
+
+  group('OutlinePanel 记住状态', () {
+    testWidgets('按 initialLevel 恢复「显示到第几级」', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc), initialLevel: 1);
+      await tester.pumpAndSettle();
+
+      // 只剩根标题,且层级按钮标签跟着显示
+      expect(find.text('第一章'), findsOneWidget);
+      expect(find.text('第二章'), findsOneWidget);
+      expect(find.text('一节'), findsNothing);
+      expect(find.text('H1'), findsOneWidget);
+    });
+
+    testWidgets('按 initialCollapsed 恢复折叠状态(用稳定标识)', (tester) async {
+      final nodes = parseOutline(_doc);
+      final ids = outlineIdentities(nodes);
+      final first = nodes[0]; // 第一章
+      final id = ids[first.lineIndex]!;
+
+      await pumpPanel(tester, nodes: nodes, initialCollapsed: {id});
+      await tester.pumpAndSettle();
+
+      expect(find.text('第一章'), findsOneWidget);
+      expect(find.text('一节'), findsNothing); // 恢复成折叠
+      expect(find.text('2'), findsOneWidget); // 行数 2
+    });
+
+    testWidgets('对不上的标识被忽略,不影响显示', (tester) async {
+      await pumpPanel(
+        tester,
+        nodes: parseOutline(_doc),
+        initialCollapsed: {'h1|这条标题早被删了', 'h9|胡编的'},
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('5'), findsOneWidget); // 全展开,一条都没误折叠
+    });
+
+    testWidgets('折叠变化时回调出稳定标识', (tester) async {
+      Set<String>? reported;
+      await pumpPanel(
+        tester,
+        nodes: parseOutline(_doc),
+        onStateChanged: (c) => reported = c,
+      );
+
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_down).first);
+      await tester.pumpAndSettle();
+
+      expect(reported, isNotNull);
+      expect(reported, contains('h1|第一章'));
+    });
+
+    testWidgets('改层级时回调出层级(「全部展开」回调 null)', (tester) async {
+      final levels = <int?>[];
+      await pumpPanel(
+        tester,
+        nodes: parseOutline(_doc),
+        onLevelChanged: levels.add,
+      );
+
+      await tester.tap(find.text('全部'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('显示到 H2'));
+      await tester.pumpAndSettle();
+      expect(levels, [2]);
+
+      await tester.tap(find.text('H2'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('全部展开'));
+      await tester.pumpAndSettle();
+      expect(levels, [2, null]);
+    });
+  });
+
+  group('OutlinePanel 上下标题与复制标题', () {
+    /// 真机里点「下一个标题」后,父组件会更新 activeLineIndex,下一次
+    /// 「上一个」是相对新位置算的。用 StatefulBuilder 复现这个回路,
+    /// 否则测的是一次性快照,和实际行为不符。
+    Future<List<OutlineNode>> pumpNav(
+      WidgetTester tester,
+      List<OutlineNode> nodes, {
+      int? startActive,
+    }) async {
+      final taps = <OutlineNode>[];
+      var active = startActive;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 240,
+              height: 600,
+              child: StatefulBuilder(
+                builder: (ctx, setSt) => OutlinePanel(
+                  nodes: nodes,
+                  activeLineIndex: active,
+                  onTapNode: (n) {
+                    taps.add(n);
+                    setSt(() => active = n.lineIndex);
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      return taps;
+    }
+
+    testWidgets('下一个/上一个标题按文档顺序来回跳', (tester) async {
+      final nodes = parseOutline(_doc);
+      final heads = headingsInOrder(nodes); // 第一章,一节,二节,第二章
+      final taps = await pumpNav(tester, nodes, startActive: heads[1].lineIndex);
+
+      await tester.tap(find.byIcon(Icons.arrow_downward));
+      await tester.pumpAndSettle();
+      expect(taps.last.text, '二节');
+
+      // 上一步把当前位置带到了「二节」,所以「上一个」应回到「一节」
+      await tester.tap(find.byIcon(Icons.arrow_upward));
+      await tester.pumpAndSettle();
+      expect(taps.last.text, '一节');
+
+      await tester.tap(find.byIcon(Icons.arrow_downward));
+      await tester.pumpAndSettle();
+      expect(taps.last.text, '二节');
+      expect(taps.map((n) => n.text).toList(), ['二节', '一节', '二节']);
+    });
+
+    testWidgets('没有当前章节时,下一个从第一个标题开始', (tester) async {
+      final taps = await pumpNav(tester, parseOutline(_doc));
+      await tester.tap(find.byIcon(Icons.arrow_downward));
+      await tester.pumpAndSettle();
+      expect(taps.single.text, '第一章');
+    });
+
+    testWidgets('到末尾后绕回开头(不会点了没反应)', (tester) async {
+      final nodes = parseOutline(_doc);
+      final heads = headingsInOrder(nodes);
+      final taps = await pumpNav(tester, nodes, startActive: heads.last.lineIndex);
+
+      await tester.tap(find.byIcon(Icons.arrow_downward));
+      await tester.pumpAndSettle();
+      expect(taps.last.text, '第一章');
+    });
+
+    testWidgets('底部导航图标不与折叠三角混用同一个图标', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+      // 折叠三角只属于有子节点的节点:第一章、一节 => 2 个
+      expect(find.byIcon(Icons.keyboard_arrow_down), findsNWidgets(2));
+      expect(find.byIcon(Icons.chevron_right), findsNothing);
+      // 导航用另外的图标
+      expect(find.byIcon(Icons.arrow_upward), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_downward), findsOneWidget);
+    });
+
+    testWidgets('复制全部标题写进剪贴板并给出提示', (tester) async {
+      final written = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            written.add((call.arguments as Map)['text'] as String);
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        tester.binding.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null);
+      });
+
+      await pumpPanel(tester, nodes: parseOutline(_doc));
+      await tester.tap(find.byIcon(Icons.copy_all_outlined));
+      await tester.pump();
+
+      expect(written.single, contains('# 第一章'));
+      expect(written.single, contains('## 一节'));
+      expect(written.single, contains('# 第二章'));
+      expect(written.single, isNot(contains('条目 A'))); // 只复制标题
+      expect(find.text('已复制 4 个标题'), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 1500)); // 清掉复位计时器
+      expect(find.text('已复制 4 个标题'), findsNothing);
+    });
+
+    testWidgets('没有层级结构时不显示底部导航', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline('# 甲\n# 乙\n'));
+      expect(find.byIcon(Icons.arrow_upward), findsNothing);
+      expect(find.byIcon(Icons.copy_all_outlined), findsNothing);
+    });
+  });
+
+  group('OutlinePanel 悬停预览', () {
+    const md = '# 第一章\n第一章的正文。\n\n## 一节\n一节的正文。\n';
+
+    testWidgets('给标题挂上章节正文预览', (tester) async {
+      final nodes = parseOutline(md);
+      await pumpPanel(tester, nodes: nodes, sourceText: md);
+
+      final ex = sectionExcerptFor(md, nodes,
+          headingsInOrder(nodes).firstWhere((n) => n.text == '第一章'));
+      final tips =
+          tester.widgetList<SectionPreviewTooltip>(find.byType(SectionPreviewTooltip));
+      expect(tips.any((t) => t.excerpt == ex), isTrue);
+      expect(tips.any((t) => t.excerpt.contains('第一章的正文。')), isTrue);
+    });
+
+    testWidgets('没给正文原文时不挂预览', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(md));
+      expect(find.byType(SectionPreviewTooltip), findsNothing);
+    });
+
+    testWidgets('空章节不挂预览(免得悬停弹个空壳)', (tester) async {
+      const empty = '# 甲\n# 乙\n';
+      await pumpPanel(tester, nodes: parseOutline(empty), sourceText: empty);
+      expect(find.byType(SectionPreviewTooltip), findsNothing);
+    });
+
+    testWidgets('只有标题挂预览,列表项不挂', (tester) async {
+      await pumpPanel(tester, nodes: parseOutline(md), sourceText: md);
+      expect(find.byType(SectionPreviewTooltip), findsNWidgets(2)); // 两个标题
     });
   });
 
