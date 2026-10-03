@@ -9,6 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'database.dart';
 import 'image_service.dart';
 import 'outline.dart';
+import 'chunked_editor.dart';
 import 'copy_block.dart';
 
 class NotePage extends StatefulWidget {
@@ -146,6 +147,40 @@ class _NotePageState extends State<NotePage> {
   /// 编辑态不跟随 —— 这正是 Quiet Outline 的「No auto-expand when editing」:
   /// 打字时目录跟着乱跳比不跳更烦人。
   int _activeHeadingOrdinal = -1;
+
+  /// 是否用分块编辑器:编辑态 + 有折叠 + 大纲非空。
+  ///
+  /// 只在**已经有折叠**时才切到分块模式 —— 没折叠时保持原来那个单输入框,
+  /// 日常编辑的体验和路径一个字都不变,新代码只在用户主动折叠后才生效。
+  bool get _useChunkedEditor =>
+      !_isPreviewing && _outlineCollapsed.isNotEmpty && _currentOutline().isNotEmpty;
+
+  /// 分块编辑器回传的全文:更新模型(保存/撤销/大纲/阅读态都跟着它走)。
+  ///
+  /// 注意这里**不重新切块** —— 分块编辑器自己知道用户正在哪一块里打字,
+  /// 打字期间重切会重建输入框、焦点就丢了。
+  void _applyChunkedEdit(String full) {
+    if (full == _contentController.text) return;
+    final prev = _contentController.selection;
+    _contentController.value = TextEditingValue(
+      text: full,
+      // 保留原有光标位置(夹在合法范围内):工具栏「在光标处插入」要用它
+      selection: prev.isValid
+          ? TextSelection.collapsed(
+              offset: prev.baseOffset.clamp(0, full.length))
+          : TextSelection.collapsed(offset: full.length),
+    );
+    _onContentChanged();
+  }
+
+  /// 分块编辑器把光标放进某一块时,同步整篇控制器的 selection ——
+  /// 否则工具栏插入会跑到全文开头。
+  void _onChunkCursorMoved(int offset) {
+    final len = _contentController.text.length;
+    final at = offset.clamp(0, len);
+    if (_contentController.selection.baseOffset == at) return;
+    _contentController.selection = TextSelection.collapsed(offset: at);
+  }
 
   /// 取当前正文对应的大纲。
   ///
@@ -1521,29 +1556,48 @@ class _NotePageState extends State<NotePage> {
                 ),
                 const SizedBox(height: 12),
                 Expanded(
-                  child: TextField(
-                    controller: _contentController,
-                    focusNode: _contentFocusNode,
-                    maxLines: null,
-                    expands: true,
-                    keyboardType: TextInputType.multiline,
-                    decoration: InputDecoration(
-                      hintText: '开始写点什么...',
-                      border: InputBorder.none,
-                      hintStyle: TextStyle(
-                        color: _textTertiary,
-                        fontSize: _fontSize,
-                        height: 1.7,
-                      ),
-                    ),
-                    style: TextStyle(
-                      fontSize: _fontSize,
-                      color: _textPrimary,
-                      height: 1.7,
-                    ),
-                    cursorColor: _textPrimary,
-                    onChanged: (_) => _onContentChanged(),
-                  ),
+                  // 有折叠时用分块编辑器(每块一个输入框,折起来就收起对应块);
+                  // 没折叠时仍用原来那个单输入框,日常编辑路径完全不变。
+                  child: _useChunkedEditor
+                      ? SingleChildScrollView(
+                          child: ChunkedEditor(
+                            markdown: _contentController.text,
+                            nodes: _currentOutline(),
+                            foldedIds: _outlineCollapsed,
+                            onFoldedChanged: _setOutlineFolded,
+                            onTextChanged: _applyChunkedEdit,
+                            onCursorMoved: _onChunkCursorMoved,
+                            textStyle: TextStyle(
+                              fontSize: _fontSize,
+                              color: _textPrimary,
+                              height: 1.7,
+                            ),
+                            hintText: '开始写点什么...',
+                          ),
+                        )
+                      : TextField(
+                          controller: _contentController,
+                          focusNode: _contentFocusNode,
+                          maxLines: null,
+                          expands: true,
+                          keyboardType: TextInputType.multiline,
+                          decoration: InputDecoration(
+                            hintText: '开始写点什么...',
+                            border: InputBorder.none,
+                            hintStyle: TextStyle(
+                              color: _textTertiary,
+                              fontSize: _fontSize,
+                              height: 1.7,
+                            ),
+                          ),
+                          style: TextStyle(
+                            fontSize: _fontSize,
+                            color: _textPrimary,
+                            height: 1.7,
+                          ),
+                          cursorColor: _textPrimary,
+                          onChanged: (_) => _onContentChanged(),
+                        ),
                 ),
               ],
             ),
