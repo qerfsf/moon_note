@@ -149,9 +149,13 @@ class _NotePageState extends State<NotePage> {
 
   /// 取当前正文对应的大纲。
   ///
+  /// 用 parseOutlineAuto:整篇没有标题也没有列表项时(纯散文),退回「把空行
+  /// 分隔的段落当条目」,否则长散文的目录会一直是空的、也没有任何可折的东西。
+  ///
   /// 缓存键是**正文本身**(见 OutlineCache),不是版本号 —— 版本号只要有一条
   /// 改正文的路径忘了递增就会让目录永远停在旧结果上。
-  List<OutlineNode> _currentOutline() => _outlineCache.of(_contentController.text);
+  List<OutlineNode> _currentOutline() =>
+      _outlineCache.of(_contentController.text);
 
   /// 目标标题在**当前预览**里可见标题中的序号。
   ///
@@ -249,6 +253,7 @@ class _NotePageState extends State<NotePage> {
         activeLineIndex: _headingLineIndexByOrdinal(_activeHeadingOrdinal),
         sourceText: _contentController.text,
         foldedIds: _outlineCollapsed,
+        foldableIds: _previewFoldable,
         onFoldChanged: _setOutlineFolded,
         initialLevel: _outlineLevel,
         onLevelChanged: (lv) {
@@ -273,6 +278,14 @@ class _NotePageState extends State<NotePage> {
       context,
       nodes: _currentOutline(),
       onTapNode: _jumpToOutlineNode,
+      foldedIds: _outlineCollapsed,
+      foldableIds: _previewFoldable,
+      onFoldChanged: _setOutlineFolded,
+      initialLevel: _outlineLevel,
+      onLevelChanged: (lv) {
+        _outlineLevel = lv;
+        _saveOutlineLevel(lv);
+      },
     );
   }
 

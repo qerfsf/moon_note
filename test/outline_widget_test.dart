@@ -621,10 +621,15 @@ void main() {
       expect(find.text('已复制 4 个标题'), findsNothing);
     });
 
-    testWidgets('没有层级结构时不显示底部导航', (tester) async {
+    testWidgets('没有层级结构时:底部导航保留,层级条和全部折叠不显示', (tester) async {
+      // 平级条目(段落兜底、多个 H1)同样需要「上一个/下一个」导航,
+      // 但没有层级可调,所以层级条和「全部折叠」不该出现。
       await pumpPanel(tester, nodes: parseOutline('# 甲\n# 乙\n'));
-      expect(find.byIcon(Icons.arrow_upward), findsNothing);
-      expect(find.byIcon(Icons.copy_all_outlined), findsNothing);
+      expect(find.byIcon(Icons.arrow_upward), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_downward), findsOneWidget);
+      expect(find.byIcon(Icons.copy_all_outlined), findsOneWidget);
+      expect(find.text('全部'), findsNothing); // 层级条
+      expect(find.byIcon(Icons.unfold_more), findsNothing); // 全部折叠
     });
   });
 

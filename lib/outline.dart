@@ -14,15 +14,25 @@ class OutlineNode {
     required this.level,
     required this.text,
     required this.isHeading,
+    this.isParagraph = false,
   });
 
   final int lineIndex;
   final int charOffset;
 
-  /// 标题为 1..6(对应 # 的个数);列表项为缩进深度(1 起)。
+  /// 标题为 1..6(对应 # 的个数);列表项为缩进深度(1 起);
+  /// 段落兜底条目一律 1。
   final int level;
   final String text;
   final bool isHeading;
+
+  /// 是「段落兜底」条目:整篇没有标题也没有列表项时,把空行分隔的段落当条目。
+  ///
+  /// 它按伪标题处理(isHeading 为 true),这样已有的节范围、折叠、摘要机制都能
+  /// 直接复用;这个标记只用来区别渲染,以及在「复制全部标题」时排除掉 ——
+  /// 段落不是标题,不该被复制成 `# 段落第一行`。
+  final bool isParagraph;
+
   final List<OutlineNode> children = [];
 
   bool get hasChildren => children.isNotEmpty;
@@ -207,6 +217,9 @@ List<OutlineNode> filterOutline(List<OutlineNode> nodes, String query) {
           level: n.level,
           text: n.text,
           isHeading: n.isHeading,
+          // 必须一起复制:漏了的话过滤之后段落条目会当成真标题(渲染成标题、
+          // 还会被「复制全部标题」导出成 # 段落第一行)
+          isParagraph: n.isParagraph,
         )..children.addAll(kids);
         kept.add(copy);
       }
@@ -257,12 +270,16 @@ Map<int, String> outlineIdentities(List<OutlineNode> nodes) {
 
 /// 把大纲导出成 Markdown 文本(缩进体现层级),用于「复制标题」。
 /// [includeListItems] 为 false 时只导出 `#` 标题。
+///
+/// 段落兜底条目一律跳过:它们不是标题,导出成 `# 段落第一行` 是错的。
 String outlineToMarkdown(List<OutlineNode> nodes,
     {bool includeListItems = false}) {
   final sb = StringBuffer();
   void walk(List<OutlineNode> list, int depth) {
     for (final n in list) {
-      if (n.isHeading) {
+      if (n.isParagraph) {
+        // 段落条目既不是标题也不是列表项,直接略过
+      } else if (n.isHeading) {
         sb.writeln('${'#' * n.level} ${n.text}');
       } else if (includeListItems) {
         sb.writeln('${'  ' * depth}- ${n.text}');
@@ -438,6 +455,77 @@ bool hasFoldableContent(
   final bodyStart = nl < 0 ? r.end : nl + 1;
   if (bodyStart >= r.end) return false;
   return markdown.substring(bodyStart, r.end).trim().isNotEmpty;
+}
+
+/// 整篇既没有标题、也没有列表项时的**兜底**:把空行分隔的段落当作目录条目,
+/// 条目文字取该段第一行。
+///
+/// 只在这种「目录会完全为空」的情况下启用 —— 像「肉鸽卡牌」那种有上百个列表项
+/// 的笔记,目录本来就有内容,不该被段落搅乱。
+///
+/// 生成的是**伪标题**(isHeading 为 true、level 一律 1),这样已有的节范围、
+/// 折叠、悬停摘要都能直接复用;isParagraph 供界面区别渲染。
+/// 围栏代码块整块跳过,不当条目。
+List<OutlineNode> parseParagraphOutline(String markdown) {
+  final nodes = <OutlineNode>[];
+  final lines = markdown.split('\n');
+  final fenceRe = RegExp(r'^(```|~~~)');
+
+  var offset = 0;
+  var inFence = false;
+  var fenceMarker = '';
+  int? blockStart;
+  int? blockOffset;
+
+  void flush() {
+    final start = blockStart;
+    if (start == null) return;
+    blockStart = null;
+    final first = lines[start].trim();
+    // 以围栏开头的块是代码块,不给它做条目
+    if (first.isEmpty || fenceRe.hasMatch(first)) return;
+    final text = _cleanInline(first);
+    if (text.isEmpty) return;
+    nodes.add(OutlineNode(
+      lineIndex: start,
+      charOffset: blockOffset ?? 0,
+      level: 1,
+      text: text.length > 60 ? '${text.substring(0, 60)}…' : text,
+      isHeading: true,
+      isParagraph: true,
+    ));
+  }
+
+  for (var i = 0; i < lines.length; i++) {
+    final line = lines[i];
+    final fence = fenceRe.firstMatch(line.trimLeft());
+    if (fence != null) {
+      final marker = fence.group(1)!;
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker;
+      } else if (marker == fenceMarker) {
+        inFence = false;
+        fenceMarker = '';
+      }
+    }
+    // 代码块内部的空行不算段落分隔
+    if (line.trim().isEmpty && !inFence) {
+      flush();
+    } else if (blockStart == null) {
+      blockStart = i;
+      blockOffset = offset;
+    }
+    offset += line.length + 1;
+  }
+  flush();
+  return nodes;
+}
+
+/// 目录用的解析:**优先按标题/列表解析;整篇什么都解析不出来时才退回段落条目**。
+List<OutlineNode> parseOutlineAuto(String markdown) {
+  final normal = parseOutline(markdown);
+  return normal.isNotEmpty ? normal : parseParagraphOutline(markdown);
 }
 
 /// 正文按折叠状态切一刀,得到「预览真正要渲染的文本」和「其中还看得见的标题」。
@@ -636,7 +724,7 @@ class OutlineCache {
   List<OutlineNode> of(String text) {
     if (!identical(_source, text) && _source != text) {
       _source = text;
-      _nodes = parseOutline(text);
+      _nodes = parseOutlineAuto(text);
     }
     return _nodes;
   }
@@ -657,6 +745,7 @@ class OutlinePanel extends StatefulWidget {
     this.autoExpand = true,
     this.sourceText,
     this.foldedIds = const <String>{},
+    this.foldableIds = const <String>{},
     this.onFoldChanged,
     this.initialLevel,
     this.onLevelChanged,
@@ -680,6 +769,10 @@ class OutlinePanel extends StatefulWidget {
   /// 已折叠的节(标识集合)。这是**受控属性**:正文折叠和目录折叠共用同一份
   /// 状态,由调用方持有 —— 否则两处各存一份,在正文里折了目录不会跟着变。
   final Set<String> foldedIds;
+
+  /// 有内容可折的节点标识(由 foldSectionsForPreview 算出)。
+  /// 段落兜底条目没有子节点,但它的多行正文是可折的,所以不能只看 hasChildren。
+  final Set<String> foldableIds;
 
   /// 用户折叠/展开时回调,调用方负责更新 foldedIds 并持久化。
   final void Function(Set<String> foldedIds)? onFoldChanged;
@@ -772,13 +865,18 @@ class _OutlinePanelState extends State<OutlinePanel> {
   }
 
   /// 所有有子节点的节点的标识(「全部折叠」用)。
+  ///
+  /// 也算上「没有子节点但有可折正文」的(段落兜底条目、只有正文的标题):
+  /// 否则在一篇纯散文里点「全部折叠」会毫无反应。
   Set<String> get _parentIds {
     final ids = _ids;
     final out = <String>{};
     void walk(List<OutlineNode> list) {
       for (final n in list) {
-        if (n.hasChildren && ids[n.lineIndex] != null) {
-          out.add(ids[n.lineIndex]!);
+        final id = ids[n.lineIndex];
+        if (id != null &&
+            (n.hasChildren || widget.foldableIds.contains(id))) {
+          out.add(id);
         }
         walk(n.children);
       }
@@ -886,7 +984,10 @@ class _OutlinePanelState extends State<OutlinePanel> {
     // 过滤时强制展开,否则命中的节点可能被折叠状态藏起来,看着像没搜到
     final rows =
         flattenOutline(tree, filtering ? const <int>{} : collapsedLines);
-    final hasAnyChild = _collectCount(widget.nodes) > 0;
+    // 「有层级结构」决定要不要显示层级条和全部折叠;
+    // 底部导航只要有条目就该显示 —— 段落兜底的笔记是平级的,没有层级但需要导航。
+    final hasHierarchy = _collectCount(widget.nodes) > 0;
+    final hasAnyEntry = widget.nodes.isNotEmpty;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -909,7 +1010,7 @@ class _OutlinePanelState extends State<OutlinePanel> {
               Text('${rows.length}',
                   style: TextStyle(fontSize: 11, color: cs.outline)),
               const Spacer(),
-              if (hasAnyChild)
+              if (hasHierarchy || _parentIds.isNotEmpty)
                 IconButton(
                   icon: Icon(Icons.unfold_more, size: 16, color: cs.outline),
                   tooltip: '全部折叠 / 展开',
@@ -970,7 +1071,7 @@ class _OutlinePanelState extends State<OutlinePanel> {
                   ),
                 ),
               ),
-              if (hasAnyChild) ...[
+              if (hasHierarchy) ...[
                 const SizedBox(width: 4),
                 PopupMenuButton<int>(
                   tooltip: '只显示到第几级',
@@ -1026,7 +1127,7 @@ class _OutlinePanelState extends State<OutlinePanel> {
               : _buildDropArea(cs, rows, collapsedLines),
         ),
         // 底部:上一个/下一个标题 + 复制全部标题
-        if (hasAnyChild) ...[
+        if (hasAnyEntry) ...[
           Divider(height: 0.5, thickness: 0.5, color: cs.outlineVariant),
           Padding(
             padding: const EdgeInsets.fromLTRB(4, 2, 4, 2),
@@ -1114,12 +1215,23 @@ class _OutlinePanelState extends State<OutlinePanel> {
     final isHeading = node.isHeading;
     final isActive = widget.activeLineIndex != null &&
         node.lineIndex == widget.activeLineIndex;
-    final fontSize = isHeading
-        ? (node.level == 1 ? 13.5 : (node.level == 2 ? 13.0 : 12.5))
-        : 12.5;
+    // 段落兜底条目:不是真标题,渲染成普通正文样式(不加粗、不画标题色条),
+    // 免得让人以为笔记里真有这些标题。
+    final isPara = node.isParagraph;
+    final ids = _ids;
+    final nodeId = ids[node.lineIndex];
+    // 能不能折:有子节点,或者本身有可折的正文(段落条目就是这种 ——
+    // 它的多行正文折起来只留第一行,像 Obsidian 折列表项那样)
+    final canFold = node.hasChildren ||
+        (nodeId != null && widget.foldableIds.contains(nodeId));
+    final fontSize = (!isHeading || isPara)
+        ? 12.5
+        : (node.level == 1 ? 13.5 : (node.level == 2 ? 13.0 : 12.5));
     final color = isActive
         ? cs.primary
-        : (isHeading ? cs.onSurface : cs.onSurfaceVariant);
+        : (isPara
+            ? cs.onSurfaceVariant
+            : (isHeading ? cs.onSurface : cs.onSurfaceVariant));
 
     final rowWidget = InkWell(
       key: isActive ? _activeRowKey : null,
@@ -1135,11 +1247,11 @@ class _OutlinePanelState extends State<OutlinePanel> {
         ),
         child: Row(
           children: [
-            // 折叠三角;无子节点时占位,保证文字左缘对齐
+            // 折叠三角;不能折的占位,保证文字左缘对齐
             SizedBox(
               width: 18,
               height: 18,
-              child: node.hasChildren
+              child: canFold
                   ? InkWell(
                       onTap: () => _toggleNode(node.lineIndex),
                       child: Icon(
@@ -1152,8 +1264,8 @@ class _OutlinePanelState extends State<OutlinePanel> {
                     )
                   : null,
             ),
-            // 标题左侧加一道短色条,便于和列表项区分
-            if (isHeading)
+            // 标题左侧加一道短色条,便于和列表项、段落条目区分
+            if (isHeading && !isPara)
               Container(
                 width: 3,
                 height: 12,
@@ -1170,7 +1282,7 @@ class _OutlinePanelState extends State<OutlinePanel> {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: fontSize,
-                  fontWeight: isHeading || isActive
+                  fontWeight: (isHeading && !isPara) || isActive
                       ? FontWeight.w600
                       : FontWeight.w400,
                   color: color,
@@ -1378,10 +1490,18 @@ class _OutlinePanelState extends State<OutlinePanel> {
 }
 
 /// 手机端入口:底部弹层打开目录,选中后自动关闭并跳转。
+///
+/// [foldedIds]/[foldableIds]/[onFoldChanged] 必须一起传进来:折叠状态是受控的,
+/// 不传的话弹层里的三角点了会没反应(面板会按空集合渲染,回调也是 null)。
 Future<void> showOutlineSheet(
   BuildContext context, {
   required List<OutlineNode> nodes,
   required void Function(OutlineNode node) onTapNode,
+  Set<String> foldedIds = const <String>{},
+  Set<String> foldableIds = const <String>{},
+  void Function(Set<String> foldedIds)? onFoldChanged,
+  int? initialLevel,
+  void Function(int? level)? onLevelChanged,
   double heightFactor = 0.62,
 }) {
   return showModalBottomSheet<void>(
@@ -1394,6 +1514,11 @@ Future<void> showOutlineSheet(
         height: h,
         child: OutlinePanel(
           nodes: nodes,
+          foldedIds: foldedIds,
+          foldableIds: foldableIds,
+          onFoldChanged: onFoldChanged,
+          initialLevel: initialLevel,
+          onLevelChanged: onLevelChanged,
           onTapNode: (node) {
             Navigator.of(ctx).pop();
             onTapNode(node);
