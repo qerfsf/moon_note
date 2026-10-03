@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'database.dart';
+import 'app_version.dart';
 
 class BackupService {
   static final BackupService instance = BackupService._();
@@ -22,7 +23,7 @@ class BackupService {
     final db = await DatabaseHelper.instance.database;
     final data = <String, dynamic>{
       'version': 1,
-      'app_version': '3.2.1',
+      'app_version': kAppVersion,
       'exported_at': DateTime.now().toIso8601String(),
       'tables': <String, dynamic>{},
     };

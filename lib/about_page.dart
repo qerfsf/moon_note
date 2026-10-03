@@ -1,5 +1,6 @@
 ﻿import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'app_version.dart';
 
 class AboutPage extends StatelessWidget {
   const AboutPage({super.key});
@@ -36,7 +37,7 @@ class AboutPage extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            '版本 3.2.1',
+            '版本 $kAppVersion',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 14, color: cs.outline),
           ),

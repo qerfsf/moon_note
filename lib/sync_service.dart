@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'database.dart';
 import 'image_service.dart';
 import 'sync_change.dart';
+import 'app_version.dart';
 
 enum SyncStatus { idle, connecting, syncing, error }
 
@@ -1257,7 +1258,7 @@ class SyncService {
     String getSetting(String key) =>
         settings.where((r) => r['key'] == key).firstOrNull?['value'] as String? ?? '';
     _sendJson(request.response, {
-      'version': '3.2.1',
+      'version': kAppVersion,
       'device': Platform.localHostname,
       'sync_key': getSetting('sync_key'),
       'device_name': getSetting('device_name'),
@@ -1503,7 +1504,7 @@ class SyncService {
     } catch (_) {}
 
     return {
-      'version': '3.2.1',
+      'version': kAppVersion,
       'device': Platform.localHostname,
       'sync_key': await _getSyncKey(),
       'watermark': watermark,

@@ -10,6 +10,7 @@ import 'about_page.dart';
 import 'sync_page.dart';
 import 'sync_history_page.dart';
 import 'sync_verify_page.dart';
+import 'app_version.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -385,7 +386,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     MaterialPageRoute(builder: (_) => const RecycleBinPage()));
               }),
           _tile(cs, Icons.info_outline, '关于 Moon Note',
-              subtitle: '版本 3.2.1',
+              subtitle: '版本 $kAppVersion',
               onTap: () {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const AboutPage()));
