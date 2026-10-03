@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -256,6 +256,49 @@ class SyncService {
     }
   }
 
+  /// 当前是否存在 `PC:localPort → 手机:remotePort` 的转发。
+  ///
+  /// 为什么必须能查:adb 的转发**不是持久的** —— adb 守护进程重启、USB 重新插拔、
+  /// 手机掉线重连,都会让已建立的转发凭空消失。所以任何依赖转发的操作都要先校验,
+  /// 不能假设"上次点过设置端口映射,现在它还在"。
+  Future<bool> adbForwardExists({int localPort = 9091}) async {
+    try {
+      final result = await Process.run(_adbPath, ['forward', '--list']);
+      if (result.exitCode != 0) return false;
+      // 输出形如:  aacd9ae7 tcp:9091 tcp:9090
+      return (result.stdout as String)
+          .split('\n')
+          .any((line) => line.contains('tcp:$localPort'));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 确保 USB 转发可用:已存在就直接返回;缺失(或被别的进程冲掉)就重建。
+  ///
+  /// 存在的意义:[tryUsbSync] 同步结束会在 finally 里删掉转发,而同步页的
+  /// 「同步」按钮走的是 127.0.0.1:9091 —— 少了转发就必然连接失败,
+  /// 用户只会看到"点了同步没反应"。所以手动同步前必须先过这一关。
+  Future<bool> ensureAdbForward(
+      {int localPort = 9091, int remotePort = 9090}) async {
+    final devices = await getAdbDevices();
+    if (devices.isEmpty) {
+      messageNotifier.value = 'USB: 未检测到设备，请确认手机已连接并开启 USB 调试';
+      return false;
+    }
+    if (await adbForwardExists(localPort: localPort)) return true;
+    // 先清掉可能存在的残留(失败时才删得掉,成功与否都继续重建)
+    await removeAdbForward(localPort: localPort);
+    final ok =
+        await setupAdbForward(localPort: localPort, remotePort: remotePort);
+    if (!ok) {
+      messageNotifier.value = 'USB: 端口转发失败，请确认 ADB 已连接';
+      return false;
+    }
+    messageNotifier.value = '已重建端口转发：PC:$localPort → 手机:$remotePort';
+    return true;
+  }
+
   Future<void> startAdbMonitor() async {
     if (_adbMonitorProcess != null) return;
     try {
@@ -387,6 +430,9 @@ class SyncService {
         return false;
       }
       print('[USB] 端口转发已建立: 9091 → 9090');
+      // 同步成功后保留转发:否则紧接着点同步页的「同步」按钮会因为转发已被删而失败。
+      // 只有失败时才清理,避免留下指向坏设备的映射。
+      var keepForward = false;
       try {
         await Future.delayed(const Duration(milliseconds: 200));
         bool connected = false;
@@ -434,10 +480,15 @@ class SyncService {
           }
         } catch (_) {}
         print('[USB] 同步成功');
+        keepForward = true;
         return true;
       } finally {
-        print('[USB] 清理端口转发');
-        await removeAdbForward(localPort: 9091);
+        if (keepForward) {
+          print('[USB] 保留端口转发，供同步页手动同步复用');
+        } else {
+          print('[USB] 清理端口转发');
+          await removeAdbForward(localPort: 9091);
+        }
       }
     } catch (e) {
       print('[USB] 同步失败: $e');

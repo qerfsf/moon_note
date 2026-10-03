@@ -37,6 +37,7 @@ class _SyncPageState extends State<SyncPage> {
     _portController.text = '9090';
     _loadIps();
     _loadLastConnection();
+    _refreshAdbForwardState();
   }
 
   Future<void> _loadLastConnection() async {
@@ -50,6 +51,20 @@ class _SyncPageState extends State<SyncPage> {
   Future<void> _loadIps() async {
     final ips = await _sync.getLocalIps();
     if (mounted) setState(() => _ips = ips);
+  }
+
+  /// 让「是否已映射」跟随转发的真实状态,而不是只记着"我上次点成功过"。
+  /// 转发会被 adb 守护进程重启 / USB 重插冲掉,界面若不重查就会显示已映射,
+  /// 用户点同步却连不上。
+  Future<void> _refreshAdbForwardState() async {
+    final exists = await _sync.adbForwardExists(localPort: 9091);
+    if (!mounted) return;
+    if (exists != _adbReversed) {
+      setState(() => _adbReversed = exists);
+    }
+    if (exists) {
+      _adbDevicesText.value = '端口转发有效：PC:9091 → 手机:9090';
+    }
   }
 
   @override
@@ -91,11 +106,28 @@ class _SyncPageState extends State<SyncPage> {
     try {
       final h = host ?? _hostController.text.trim();
       final p = port ?? int.tryParse(_portController.text) ?? 9090;
-      await _sync.fullSync(h, p);
+      // USB 路径(127.0.0.1:9091)依赖 adb 端口转发,而转发并不持久:
+      // 自动同步的收尾、adb 守护进程重启、USB 重插都会让它消失。
+      // 这里先校验并重建,否则用户点了同步只会看到连接失败,还不知道原因。
+      var ready = true;
+      if (h == '127.0.0.1' && p == 9091) {
+        ready =
+            await _sync.ensureAdbForward(localPort: 9091, remotePort: 9090);
+        if (mounted) {
+          setState(() => _adbReversed = ready);
+          if (!ready) {
+            _adbDevicesText.value = _sync.messageNotifier.value.isEmpty
+                ? 'USB 转发不可用,请点「设置端口映射」重试'
+                : _sync.messageNotifier.value;
+          }
+        }
+      }
+      if (ready) await _sync.fullSync(h, p);
     } catch (_) {
       // Error already handled in service
+    } finally {
+      if (mounted) setState(() => _isSyncing = false);
     }
-    if (mounted) setState(() => _isSyncing = false);
   }
 
   Future<void> _detectAdbDevices() async {
