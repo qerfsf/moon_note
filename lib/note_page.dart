@@ -8,6 +8,7 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:file_picker/file_picker.dart';
 import 'database.dart';
 import 'image_service.dart';
+import 'outline.dart';
 
 class NotePage extends StatefulWidget {
   final String noteId;
@@ -69,6 +70,115 @@ class _NotePageState extends State<NotePage> {
   static const double _fontSizeMin = 12;
   static const double _fontSizeMax = 24;
   static const double _fontSizeStep = 1;
+
+  // ── 目录大纲 ──
+  /// 电脑端是否展开右侧目录面板。
+  bool _showOutline = false;
+
+  /// 已解析的大纲;内容变化时按版本号重算,避免每帧都解析。
+  List<OutlineNode> _outline = const [];
+  int _outlineVersion = -1;
+
+  /// 宽屏阈值:宽于它就用右侧固定面板,窄屏(手机)改用底部弹层。
+  static const double _outlineWideWidth = 820;
+  static const double _outlinePanelWidth = 220;
+
+  /// 预览区滚动控制器(跳转要用),以及每个标题的锚点 key。
+  final ScrollController _previewScroll = ScrollController();
+  List<GlobalKey> _previewHeadingKeys = [];
+
+  /// 取当前正文对应的大纲(带缓存)。
+  List<OutlineNode> _currentOutline() {
+    if (_outlineVersion != _contentVersion) {
+      _outline = parseOutline(_contentController.text);
+      _outlineVersion = _contentVersion;
+    }
+    return _outline;
+  }
+
+  /// 文档顺序下所有标题在整篇里的序号 —— 预览渲染时按同样顺序生成锚点,
+  /// 所以这个序号能对上(围栏代码块内的 # 两边都被忽略,顺序一致)。
+  int _headingOrdinalOf(OutlineNode target) {
+    var i = 0;
+    int? found;
+    void walk(List<OutlineNode> nodes) {
+      for (final n in nodes) {
+        if (found != null) return;
+        if (n.isHeading) {
+          if (identical(n, target) || n.lineIndex == target.lineIndex) {
+            found = i;
+            return;
+          }
+          i++;
+        }
+        walk(n.children);
+      }
+    }
+
+    walk(_currentOutline());
+    return found ?? -1;
+  }
+
+  /// 点击大纲:预览态滚动到对应标题;编辑态把光标移到那一行。
+  Future<void> _jumpToOutlineNode(OutlineNode node) async {
+    if (_isPreviewing) {
+      final ordinal = _headingOrdinalOf(node);
+      if (ordinal >= 0 && ordinal < _previewHeadingKeys.length) {
+        final ctx = _previewHeadingKeys[ordinal].currentContext;
+        if (ctx != null) {
+          await Scrollable.ensureVisible(
+            ctx,
+            duration: const Duration(milliseconds: 220),
+            alignment: 0.06,
+          );
+          return;
+        }
+      }
+      // 锚点还没建好(例如刚切到预览):退回编辑态定位
+    }
+    final text = _contentController.text;
+    final offset = node.charOffset.clamp(0, text.length);
+    setState(() {
+      _isPreviewing = false;
+      _contentController.selection =
+          TextSelection.collapsed(offset: offset);
+    });
+    _saveViewMode();
+    _contentFocusNode.requestFocus();
+  }
+
+  /// 宽屏(电脑端)才用常驻侧栏。
+  bool _isWideLayout(BuildContext context) =>
+      MediaQuery.of(context).size.width >= _outlineWideWidth;
+
+  Widget _buildOutlinePanel() {
+    return Container(
+      width: _outlinePanelWidth,
+      decoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(color: _borderLight, width: 0.5),
+        ),
+      ),
+      child: OutlinePanel(
+        nodes: _currentOutline(),
+        onTapNode: _jumpToOutlineNode,
+        onClose: () => setState(() => _showOutline = false),
+      ),
+    );
+  }
+
+  /// 目录入口:宽屏切换侧栏,窄屏(手机)弹出底部目录。
+  Future<void> _toggleOutline() async {
+    if (_isWideLayout(context)) {
+      setState(() => _showOutline = !_showOutline);
+      return;
+    }
+    await showOutlineSheet(
+      context,
+      nodes: _currentOutline(),
+      onTapNode: _jumpToOutlineNode,
+    );
+  }
 
   @override
   void initState() {
@@ -1218,6 +1328,9 @@ class _NotePageState extends State<NotePage> {
     }
     _lastPreviewVersion = _contentVersion;
     _lastPreviewFontSize = _fontSize;
+    // 预览重建时一并重建标题锚点(目录跳转要靠它们定位)
+    _previewHeadingKeys = [];
+    var headingOrdinal = 0;
 
     // Parse todo items manually (more reliable than MarkdownBody checkboxBuilder)
     final taskRegex = RegExp(r'^[-*]\s*\[([ xX])\]\s+(.+)$', multiLine: true);
@@ -1273,6 +1386,7 @@ class _NotePageState extends State<NotePage> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
             child: SingleChildScrollView(
+              controller: _previewScroll,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1353,6 +1467,11 @@ class _NotePageState extends State<NotePage> {
                     data: cleanContent.isEmpty ? '暂无内容' : cleanContent,
                     selectable: true,
                     softLineBreak: true,
+                    builders: {
+                      for (final tag in const ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+                        tag: _HeadingAnchorBuilder(
+                            _previewHeadingKeys, () => headingOrdinal++),
+                    },
                     imageBuilder: (uri, title, alt) {
                       // 1) 应用内图片引用(跨设备同步使用): moonimage:<id>
                       if (uri.scheme == 'moonimage') {
@@ -1484,6 +1603,7 @@ class _NotePageState extends State<NotePage> {
     _titleController.dispose();
     _contentController.dispose();
     _titleFocusNode.dispose();
+    _previewScroll.dispose();
     _contentFocusNode.dispose();
     _findController.dispose();
     _replaceController.dispose();
@@ -1492,7 +1612,7 @@ class _NotePageState extends State<NotePage> {
   }
 
   Widget _buildBody() {
-    return Column(
+    final content = Column(
       children: [
         if (_showFind && !_isPreviewing) _buildFindBar(),
         _buildToolbar(),
@@ -1508,6 +1628,16 @@ class _NotePageState extends State<NotePage> {
         ),
       ],
     );
+    // 电脑端:目录常驻右侧;窄屏不占位,改用 AppBar 的目录按钮弹层
+    if (_showOutline && _isWideLayout(context)) {
+      return Row(
+        children: [
+          Expanded(child: content),
+          _buildOutlinePanel(),
+        ],
+      );
+    }
+    return content;
   }
 
   @override
@@ -1540,6 +1670,11 @@ class _NotePageState extends State<NotePage> {
           },
         ),
         actions: [
+          IconButton(
+            icon: Icon(Icons.list_alt_outlined, color: _textPrimary, size: 20),
+            tooltip: '目录',
+            onPressed: _toggleOutline,
+          ),
           if (!_isPreviewing)
             IconButton(
               icon: Icon(Icons.content_copy, color: _textPrimary, size: 20),
@@ -1612,4 +1747,29 @@ class _CheckerPainter extends CustomPainter {
       oldDelegate.light != light ||
       oldDelegate.dark != dark ||
       oldDelegate.cell != cell;
+}
+
+/// 给预览里的标题挂锚点,让目录点击时能精确滚动过去。
+///
+/// flutter_markdown 不暴露标题对应的源码行号,所以按「文档顺序的第 N 个标题」对齐:
+/// 解析大纲时用同样顺序数标题,两边就能对上(围栏代码块里的 # 双方都忽略,
+/// 顺序不会错位)。样式沿用 preferredStyle,观感和默认渲染一致。
+class _HeadingAnchorBuilder extends MarkdownElementBuilder {
+  _HeadingAnchorBuilder(this.keys, this.nextOrdinal);
+
+  final List<GlobalKey> keys;
+  final int Function() nextOrdinal;
+
+  @override
+  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    final ordinal = nextOrdinal();
+    while (keys.length <= ordinal) {
+      keys.add(GlobalKey());
+    }
+    return Container(
+      key: keys[ordinal],
+      padding: const EdgeInsets.only(top: 8, bottom: 2),
+      child: Text(element.textContent, style: preferredStyle),
+    );
+  }
 }
