@@ -38,6 +38,9 @@ class _SyncPageState extends State<SyncPage> {
     _loadIps();
     _loadLastConnection();
     _refreshAdbForwardState();
+    // 进页面就自动检测一次:否则「设置端口映射 / 同步」那排按钮要等用户点过
+    // 「检测」才出现 —— 而用户来这个页面就是想点同步,不该先猜一步。
+    _detectAdbDevices();
   }
 
   Future<void> _loadLastConnection() async {
@@ -132,7 +135,12 @@ class _SyncPageState extends State<SyncPage> {
 
   Future<void> _detectAdbDevices() async {
     final devices = await _sync.getAdbDevices();
-    _adbDevices = devices;
+    if (!mounted) return;
+    // 必须 setState:下面那一排按钮(设置端口映射 / 取消映射 / **同步**)的显示
+    // 条件是 `_adbDevices.isNotEmpty`,而 `_adbDevices` 不是 ValueNotifier,
+    // 光赋值不会触发重建 —— 结果就是点完「检测」,设备号显示出来了、
+    // 按钮却一个都不出现,用户以为同步功能坏了。
+    setState(() => _adbDevices = devices);
     if (devices.isEmpty) {
       _adbDevicesText.value = '未检测到设备（请确保手机已 USB 连接并开启调试）';
     } else {
@@ -325,13 +333,16 @@ class _SyncPageState extends State<SyncPage> {
                           _adbReversed ? null : _setupAdbForward,
                         ),
                         const SizedBox(width: 8),
-                        if (_adbReversed)
+                        if (_adbReversed) ...[
                           _smallBtn('取消映射', _removeAdbForward),
-                        const SizedBox(width: 8),
-                        if (_adbReversed)
-                          _smallBtn('同步',
-                              () => _doSync('127.0.0.1', 9091),
-                              isPrimary: true),
+                          const SizedBox(width: 8),
+                        ],
+                        // 不管转发在不在都显示「同步」:_doSync 自己会先校验转发、
+                        // 失效就重建,所以这个按钮任何时候点了都有意义。
+                        // (以前转发一消失按钮就没了,用户会以为同步功能坏了)
+                        _smallBtn('同步',
+                            () => _doSync('127.0.0.1', 9091),
+                            isPrimary: true),
                       ],
                     ),
                   ],

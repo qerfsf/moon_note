@@ -275,11 +275,18 @@ class SyncService {
     }
   }
 
-  /// 确保 USB 转发可用:已存在就直接返回;缺失(或被别的进程冲掉)就重建。
+  /// 确保 USB 转发**真的能连上手机**:能连通就直接用,连不通就删掉重建。
   ///
   /// 存在的意义:[tryUsbSync] 同步结束会在 finally 里删掉转发,而同步页的
   /// 「同步」按钮走的是 127.0.0.1:9091 —— 少了转发就必然连接失败,
   /// 用户只会看到"点了同步没反应"。所以手动同步前必须先过这一关。
+  ///
+  /// **为什么不能只检查「转发是否存在」**:adb 的转发可能**存在但已经失效**
+  /// (指向已断开的设备、手机应用没在运行、adb 重启后残留),这时存在却连不
+  /// 通,用户点同步只会失败。而自动同步 [tryUsbSync] 每次都是先删再重建,
+  /// 所以它不受影响 —— 这正是「自动能同步、点按钮不能」的根源。
+  /// 这里改成同样的判断:通就用,不通就重建,重建后仍不通则明确告诉用户
+  /// 是手机端的问题(而不是让人猜"为什么点了没反应")。
   Future<bool> ensureAdbForward(
       {int localPort = 9091, int remotePort = 9090}) async {
     final devices = await getAdbDevices();
@@ -287,8 +294,14 @@ class SyncService {
       messageNotifier.value = 'USB: 未检测到设备，请确认手机已连接并开启 USB 调试';
       return false;
     }
-    if (await adbForwardExists(localPort: localPort)) return true;
-    // 先清掉可能存在的残留(失败时才删得掉,成功与否都继续重建)
+
+    // 转发在、而且真的连得通 -> 直接复用
+    if (await adbForwardExists(localPort: localPort) &&
+        await adbForwardReachable(localPort: localPort)) {
+      return true;
+    }
+
+    // 不存在、或存在但连不通:一律删掉重建(和自动同步一样的做法)
     await removeAdbForward(localPort: localPort);
     final ok =
         await setupAdbForward(localPort: localPort, remotePort: remotePort);
@@ -296,8 +309,32 @@ class SyncService {
       messageNotifier.value = 'USB: 端口转发失败，请确认 ADB 已连接';
       return false;
     }
+    if (!await adbForwardReachable(localPort: localPort)) {
+      // 转发建好了却连不上,基本只有一个原因:手机上的应用没在跑
+      messageNotifier.value = 'USB: 转发已建立但连不上手机，'
+          '请确认手机上 Moon Note 正在运行（后台没被清理）';
+      return false;
+    }
     messageNotifier.value = '已重建端口转发：PC:$localPort → 手机:$remotePort';
     return true;
+  }
+
+  /// 通过 [localPort] 上的转发请求一次 `/sync/status`,判断这条转发是不是
+  /// 真的通到手机(而不是只剩下一个指向死对端的空映射)。
+  Future<bool> adbForwardReachable({int localPort = 9091}) async {
+    HttpClient? client;
+    try {
+      client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await client.getUrl(
+          Uri.parse('http://127.0.0.1:$localPort/sync/status'));
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      await res.drain<void>();
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    } finally {
+      client?.close(force: true);
+    }
   }
 
   Future<void> startAdbMonitor() async {

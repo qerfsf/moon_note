@@ -46,6 +46,9 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # 用来跑「真的点按钮」的集成测试(见 integration_test/sync_button_test.dart)
+  integration_test:
+    sdk: flutter
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
