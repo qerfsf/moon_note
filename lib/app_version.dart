@@ -10,4 +10,4 @@
 ///
 /// 同步协议里 `/sync/status` 与推送载荷都会带上这个版本号,但对端只把它当
 /// 信息显示,不做兼容性校验 —— 所以升版本不会导致两端同步失败。
-const String kAppVersion = '3.2.2';
+const String kAppVersion = '3.2.3';
