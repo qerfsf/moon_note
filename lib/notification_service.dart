@@ -12,6 +12,11 @@ class NotificationService {
   VoidCallback? onQuickNote;
   bool _hasPendingQuickNote = false;
 
+  /// 平台通知插件是否已初始化。桌面端 [init] 不会初始化插件（只用系统托盘），
+  /// 因此在任何插件调用前必须检查，否则插件会抛
+  /// "Flutter Local Notifications must be initialized before use"。
+  bool _pluginReady = false;
+
   static const _channelId = 'moon_note_quick';
   static const _channelName = '快速记录';
   static const _notifyId = 1;
@@ -55,6 +60,7 @@ class NotificationService {
       if (hasPending == true) {
         _hasPendingQuickNote = true;
       }
+      _pluginReady = true;
     }
   }
 
@@ -126,7 +132,9 @@ class NotificationService {
   }
 
   Future<void> cancel() async {
-    await _plugin.cancel(id: _notifyId);
+    if (_pluginReady) {
+      await _plugin.cancel(id: _notifyId);
+    }
     await stopForeground();
   }
 
@@ -199,9 +207,7 @@ class NotificationService {
   }
 
   Future<void> showTodoNotification({required String title, required String body}) async {
-    final isDesktop =
-        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-    if (isDesktop || !_todoNotificationVisible) return;
+    if (!_pluginReady || !_todoNotificationVisible) return;
     final android = AndroidNotificationDetails(
       _todoChannelId,
       _todoChannelName,
@@ -220,7 +226,12 @@ class NotificationService {
     );
   }
 
+  /// 桌面端没有这个常驻通知（[showTodoNotification] 同样直接返回），
+  /// 插件未初始化时也必须直接返回，否则会抛
+  /// "Flutter Local Notifications must be initialized before use"，
+  /// 而笔记列表每次刷新都会调到这里（home_page._updateTodoNotification）。
   Future<void> cancelTodoNotification() async {
+    if (!_pluginReady) return;
     await _plugin.cancel(id: _todoNotifyId);
   }
 }

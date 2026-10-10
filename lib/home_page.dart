@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'database.dart';
 import 'note_page.dart';
+import 'note_window.dart' show openNoteInNewWindow;
 import 'recycle_bin_page.dart';
 import 'settings_page.dart';
 import 'todo_page.dart';
@@ -194,6 +195,11 @@ class _HomePageState extends State<HomePage> {
   DateTime? _lastBackPress;
   String? _selectedNoteId;
   String _selectedNoteTitle = '';
+
+  /// 刚新建出来的笔记 id。桌面端「选中即打开」不会重新 push 页面,
+  /// 靠这个标记让新笔记的详情面板带上 autoFocusTitle(光标直接进标题框)。
+  /// 用户主动点了别的笔记时才清掉。
+  String? _pendingTitleFocusId;
   bool _isMouseDown = false;
   Offset? _dragStart;
   bool _isHorizontalDrag = false;
@@ -770,13 +776,33 @@ class _HomePageState extends State<HomePage> {
         'content': '',
         'modified_at': now,
       });
+      // 必须在 _loadNodes()/setState 之前打标记:详情面板一旦先以
+      // autoFocusTitle=false 建出 State,聚焦代码就不会再跑了。
+      if (_isDesktop) _pendingTitleFocusId = id;
       await _loadNodes();
       _scheduleQuickSync();
-      if (_isDesktop && !isJournal) {
-        setState(() {
-          _selectedNoteId = id;
-          _selectedNoteTitle = title;
-        });
+      if (_isDesktop) {
+        if (!isJournal) {
+          setState(() {
+            _selectedNoteId = id;
+            _selectedNoteTitle = title;
+          });
+        } else {
+          _pendingTitleFocusId = null;
+        }
+      } else if (mounted) {
+        // 手机端:新建后直接打开这条笔记(光标落在标题框里,日志笔记则落在正文)
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => NotePage(
+              noteId: id,
+              initialTitle: title,
+              autoFocusTitle: !isJournal,
+            ),
+          ),
+        );
+        if (mounted) await _loadNodes();
       }
       // Auto-show reminder dialog when creating in reminders folder
       if (isReminders && mounted) {
@@ -837,6 +863,7 @@ class _HomePageState extends State<HomePage> {
             builder: (context) => NotePage(
               noteId: id,
               initialTitle: '未命名',
+              autoFocusTitle: true,
             ),
           ),
         );
@@ -1752,6 +1779,24 @@ class _HomePageState extends State<HomePage> {
       onTap: () => _copyNode(node),
     ));
 
+    // 笔记(不是文件夹)可以拉成一个独立窗口,方便同时开好几篇对照着看
+    if (_isDesktop && !isFolder) {
+      items.add(PopupMenuItem<String>(
+        value: 'new_window',
+        child: Row(
+          children: [
+            Icon(Icons.open_in_new, size: 18, color: _textSecondary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('在新窗口打开',
+                  style: TextStyle(fontSize: 14, color: _textPrimary)),
+            ),
+          ],
+        ),
+        onTap: () => _openNoteInNewWindow(node),
+      ));
+    }
+
     if (!isFolder) {
       items.add(PopupMenuItem<String>(
         value: 'reminder',
@@ -1925,6 +1970,27 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// 把一条笔记拉成独立窗口(右键菜单「在新窗口打开」)。
+  /// 编辑内容有 500ms 防抖自动保存,点菜单时已经落库,新窗口能读到最新内容。
+  Future<void> _openNoteInNewWindow(Map<String, dynamic> node) async {
+    try {
+      await openNoteInNewWindow(node['id'] as String);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已在新窗口打开'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('打开新窗口失败:$e')),
+      );
+    }
+  }
+
   void _showDesktopContextMenu(
       Map<String, dynamic> node, Offset position) {
     showMenu<String>(
@@ -1962,6 +2028,8 @@ class _HomePageState extends State<HomePage> {
           setState(() {
             _selectedNoteId = node['id'];
             _selectedNoteTitle = node['title'];
+            // 用户主动点了别的笔记 -> 撤掉「新建时自动进标题框」的标记
+            _pendingTitleFocusId = null;
           });
         }
       },
@@ -2464,11 +2532,18 @@ class _HomePageState extends State<HomePage> {
       );
     }
     final editingNoteId = _selectedNoteId!;
+    // 刚新建的笔记:只要用户还没去点别的东西,这个标记就一直留着 ——
+    // 这样不管详情面板中间重建几次,真正建出 NotePage 的那一次一定带上
+    // autoFocusTitle=true(之前用 post-frame 清标记,会出现「刚好清在
+    // 建 State 之前」的时序竞态,标题框时有时无地不聚焦)。
+    // 用户点了其它笔记(见 _buildDesktopRow 的 onTap)就会清掉。
+    final bool focusTitle = editingNoteId == _pendingTitleFocusId;
     return NotePage(
       key: ValueKey(editingNoteId),
       noteId: editingNoteId,
       initialTitle: _selectedNoteTitle,
       embedded: true,
+      autoFocusTitle: focusTitle,
       onTitleChanged: (newTitle) {
         _selectedNoteTitle = newTitle;
         final idx = _nodes.indexWhere((n) => n['id'] == editingNoteId);
@@ -2477,6 +2552,9 @@ class _HomePageState extends State<HomePage> {
             ..['title'] = newTitle
             ..['modified_at'] = DateTime.now().millisecondsSinceEpoch;
         }
+        // 标题的保存有 500ms 防抖,回调可能在页面已经销毁之后才到
+        // (切页/关窗时会真的触发),这里必须挡住,否则 setState after dispose。
+        if (!mounted) return;
         setState(() {
           _nodes = List<Map<String, dynamic>>.from(_nodes);
         });

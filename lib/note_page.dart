@@ -11,11 +11,22 @@ import 'image_service.dart';
 import 'outline.dart';
 import 'chunked_editor.dart';
 import 'copy_block.dart';
+import 'note_window.dart' show openNoteInNewWindow;
 
 class NotePage extends StatefulWidget {
   final String noteId;
   final String initialTitle;
   final bool embedded;
+
+  /// 独立窗口模式:AppBar 左边的返回箭头变成「关闭窗口」,并且不再提供
+  /// 「在新窗口打开」(它已经在新窗口里了)。
+  final bool standalone;
+
+  /// 刚新建完这条笔记时置 true:进入笔记页就把光标放进标题框并全选,
+  /// 这样用户可以直接打字起名,不用先点一下标题。
+  /// 只有「新建笔记」这条路径会传 true;打开已有笔记不要抢焦点。
+  final bool autoFocusTitle;
+
   final void Function(String newTitle)? onTitleChanged;
 
   const NotePage({
@@ -23,6 +34,8 @@ class NotePage extends StatefulWidget {
     required this.noteId,
     required this.initialTitle,
     this.embedded = false,
+    this.standalone = false,
+    this.autoFocusTitle = false,
     this.onTitleChanged,
   });
 
@@ -148,8 +161,24 @@ class _NotePageState extends State<NotePage> {
   /// 打字时目录跟着乱跳比不跳更烦人。
   int _activeHeadingOrdinal = -1;
 
-  /// 是否用分块编辑器:编辑态 + 有折叠 + 大纲非空。
+  /// 把这篇笔记拉到一个**独立窗口**里。
   ///
+  /// 实现方式是再起一个进程:`moon_note.exe --note <id>` —— 每个进程一个窗口,
+  /// 于是天然支持同时开多篇,也不需要引入多引擎/多窗口的第三方插件。
+  /// 先用 detached 起进程,父窗口关了也不会把它带走。
+  Future<void> _openInNewWindow() async {
+    try {
+      await _doSave(); // 先把当前改动落库,新窗口才能看到
+      await openNoteInNewWindow(widget.noteId);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('打开新窗口失败:$e')),
+      );
+    }
+  }
+
+  /// 是否用分块编辑器:编辑态 + 有折叠 + 大纲非空。  ///
   /// 只在**已经有折叠**时才切到分块模式 —— 没折叠时保持原来那个单输入框,
   /// 日常编辑的体验和路径一个字都不变,新代码只在用户主动折叠后才生效。
   bool get _useChunkedEditor =>
@@ -335,10 +364,11 @@ class _NotePageState extends State<NotePage> {
     _previewScroll.addListener(_onPreviewScroll);
     _loadFontSize();
     _loadImageSetting();
-    if (widget.initialTitle == '未命名') {
+    if (widget.autoFocusTitle) {
+      // 聚焦本身交给 TextField 的 autofocus(框架保证首帧结束后请求),
+      // 这里只负责把已有标题全选上,让用户可以直接打字覆盖「未命名」。
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _titleFocusNode.requestFocus();
+        if (mounted && _titleFocusNode.hasFocus) {
           _titleController.selection = TextSelection(
             baseOffset: 0,
             extentOffset: _titleController.text.length,
@@ -1531,8 +1561,14 @@ class _NotePageState extends State<NotePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 TextField(
+                  // 给标题框一个稳定的 key:集成测试要能确定地找到它
+                  // (按提示文字找会被 offstage/多布局之类的因素坑到)
+                  key: const ValueKey('note_title_field'),
                   controller: _titleController,
                   focusNode: _titleFocusNode,
+                  // 新建笔记时自动进标题框:用框架的 autofocus,比自己在
+                  // post-frame 里 requestFocus 稳(后者实测会时有时无)
+                  autofocus: widget.autoFocusTitle,
                   textInputAction: TextInputAction.next,
                   onSubmitted: (_) => _contentFocusNode.requestFocus(),
                   decoration: InputDecoration(
@@ -2010,14 +2046,27 @@ class _NotePageState extends State<NotePage> {
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
         leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: _textPrimary, size: 20),
+          // 独立窗口里没有"上一页"可返回,改成关闭窗口更符合直觉
+          icon: Icon(widget.standalone ? Icons.close : Icons.arrow_back,
+              color: _textPrimary, size: 20),
+          tooltip: widget.standalone ? '关闭窗口' : '返回',
           onPressed: () async {
             await _doSave();
             await _saveViewMode();
+            if (widget.standalone) {
+              exit(0); // 这个进程只服务这一个窗口,存完就退出
+            }
             if (context.mounted) Navigator.pop(context);
           },
         ),
         actions: [
+          // 桌面端:把这篇笔记拉到单独窗口(独立进程,可多开)
+          if (_isDesktop && !widget.standalone)
+            IconButton(
+              icon: Icon(Icons.open_in_new, color: _textPrimary, size: 20),
+              tooltip: '在新窗口打开',
+              onPressed: _openInNewWindow,
+            ),
           IconButton(
             icon: Icon(Icons.list_alt_outlined, color: _textPrimary, size: 20),
             tooltip: '目录',

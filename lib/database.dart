@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:path_provider/path_provider.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -29,7 +30,22 @@ class DatabaseHelper {
     return _database!;
   }
 
+  /// 关闭连接(集成测试收尾用:不关掉临时库文件会被占用、删不掉)。
+  Future<void> close() async {
+    await _database?.close();
+    _database = null;
+  }
+
   static String? _resolvedDbPath;
+
+  /// 仅供集成测试:把数据库指到另一个文件(通常是复制出来的临时库),
+  /// 这样测试里新建/删除笔记**不会碰到用户的真实数据**。
+  /// 必须在任何一次 [database] 访问之前调用。
+  @visibleForTesting
+  static void debugOverrideDatabasePath(String path) {
+    _resolvedDbPath = path;
+    _database = null;
+  }
 
   /// Returns the absolute database file path.
   /// On desktop, uses a fixed location under Documents\MoonNote\
