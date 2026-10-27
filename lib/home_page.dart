@@ -896,6 +896,16 @@ class _HomePageState extends State<HomePage> {
       });
       await _loadNodes();
       _scheduleQuickSync();
+      // 建完立刻进入命名:默认名是「未命名文件夹」,直接把输入框弹出来并全选,
+      // 用户打字就打上名字,不用再右键找「重命名」。
+      if (mounted) {
+        await _renameNode({
+          'id': id,
+          'type': 'folder',
+          'title': '未命名文件夹',
+          'is_system': 0,
+        });
+      }
     } catch (e) {
       print('创建文件夹错误: $e');
     }
@@ -1282,7 +1292,14 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _renameNode(Map<String, dynamic> node) async {
     if ((node['is_system'] as int) == 1) return;
-    final controller = TextEditingController(text: node['title']);
+    final originalText = (node['title'] as String?) ?? '';
+    final controller = TextEditingController(text: originalText)
+      // 默认全选:直接打字就是覆盖(和文件管理器改名字一样)。
+      // 新建文件夹后立刻弹这个框,用户不用先删掉「未命名文件夹」四个字。
+      ..selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: originalText.length,
+      );
     final result = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(

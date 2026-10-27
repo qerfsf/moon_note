@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'database.dart';
 import 'main.dart' show appTheme, lightScheme, darkScheme, themeNotifier;
 import 'note_page.dart';
+import 'window_title.dart';
 
 /// 把一篇笔记「拉」成一个独立窗口。
 ///
@@ -80,11 +81,16 @@ class _NoteWindowBodyState extends State<_NoteWindowBody> {
     if (!mounted) return;
     if (rows.isEmpty) {
       setState(() => _missing = true);
+      // 笔记被删了:窗口标题也给个说明,别在任务栏里留个看不懂的名字
+      applyWindowTitle('笔记已删除');
       return;
     }
+    final title = (rows.first['title'] as String?) ?? '未命名';
     setState(() {
-      _title = (rows.first['title'] as String?) ?? '未命名';
+      _title = title;
     });
+    // 任务栏/标题栏显示笔记名,多开时一眼能分清是哪个窗口
+    applyWindowTitle(title.isEmpty ? '未命名' : title);
   }
 
   @override
@@ -112,6 +118,11 @@ class _NoteWindowBodyState extends State<_NoteWindowBody> {
       initialTitle: _title!,
       // 独立窗口:AppBar 左边的返回箭头变成「关闭窗口」
       standalone: true,
+      // 改名时窗口标题跟着变,任务栏里始终是当前笔记名
+      onTitleChanged: (newTitle) {
+        _title = newTitle.isEmpty ? '未命名' : newTitle;
+        applyWindowTitle(_title!);
+      },
     );
   }
 }

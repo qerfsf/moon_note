@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 3.2.4+14
+version: 3.2.5+15
 
 environment:
   sdk: ^3.8.1
@@ -42,6 +42,9 @@ dependencies:
   markdown: ^7.3.0
   flutter_local_notifications: ^20.1.0
   file_picker: ^8.0.0
+  # 独立笔记窗口要把窗口标题改成笔记名(Windows 上只能调 user32 的
+  # SetWindowTextW);dart:ffi 自己不能分配内存,toNativeUtf16/calloc 来自 ffi 包。
+  ffi: ^2.1.0
 
 dev_dependencies:
   flutter_test:
