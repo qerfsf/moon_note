@@ -186,23 +186,73 @@ class SyncService {
     return 'adb';
   }
 
-  Future<List<String>> getAdbDevices() async {
+  /// adb 服务进程死掉/卡住时,`adb devices` 会返回**空列表**,手机明明插着也
+  /// 报「未检测到设备」。用户机器上真实发生过:同步突然全失败,重启一下 adb
+  /// 服务立刻恢复(参见 sync_button 那条排查记录)。这里做成自愈:
+  /// 设备列表为空时重启一次 adb 服务再查,成功就继续同步,失败才报错。
+  DateTime? _lastAdbRestart;
+  static const _adbRestartCooldown = Duration(seconds: 15);
+
+  Future<List<String>> _rawAdbDevices() async {
     try {
       final result = await Process.run(_adbPath, ['devices']).timeout(
         const Duration(seconds: 5),
         onTimeout: () => ProcessResult(0, 0, '', ''),
       );
       final lines = (result.stdout as String).split('\n');
-      final devices = <String>[];
-      for (final line in lines.skip(1)) {
-        if (line.trim().isNotEmpty && line.contains('\tdevice')) {
-          devices.add(line.split('\t').first.trim());
-        }
-      }
-      return devices;
+      return <String>[
+        for (final line in lines.skip(1))
+          if (line.trim().isNotEmpty && line.contains('\tdevice'))
+            line.split('\t').first.trim(),
+      ];
     } catch (_) {
-      return [];
+      return const <String>[];
     }
+  }
+
+  /// 重启 adb 服务(kill-server + start-server)。
+  /// 注意:这会清掉 adb 端口转发,调用方需要重新 [setupAdbForward]。
+  Future<bool> restartAdbServer() async {
+    print('[USB] 未检测到设备,尝试重启 adb 服务(可能只是 adb 服务卡死了)');
+    try {
+      await Process.run(_adbPath, ['kill-server']).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => ProcessResult(0, 1, '', ''),
+      );
+      final r = await Process.run(_adbPath, ['start-server']).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => ProcessResult(0, 1, '', ''),
+      );
+      if (r.exitCode != 0) {
+        print('[USB] 重启 adb 服务失败: ${r.stderr}');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      print('[USB] 重启 adb 服务异常: $e');
+      return false;
+    }
+  }
+
+  /// [forceRestart] 为 true 时忽略冷却时间(用户主动点「同步」/「检测」)。
+  Future<List<String>> getAdbDevices({bool forceRestart = false}) async {
+    var devices = await _rawAdbDevices();
+    if (devices.isNotEmpty) return devices;
+
+    final last = _lastAdbRestart;
+    if (!forceRestart &&
+        last != null &&
+        DateTime.now().difference(last) < _adbRestartCooldown) {
+      return devices;
+    }
+    _lastAdbRestart = DateTime.now();
+    if (!await restartAdbServer()) return devices;
+
+    devices = await _rawAdbDevices();
+    if (devices.isNotEmpty) {
+      print('[USB] adb 服务重启后检测到设备: $devices');
+    }
+    return devices;
   }
 
   Future<bool> setupAdbReverse({int port = 9090}) async {
@@ -289,7 +339,9 @@ class SyncService {
   /// 是手机端的问题(而不是让人猜"为什么点了没反应")。
   Future<bool> ensureAdbForward(
       {int localPort = 9091, int remotePort = 9090}) async {
-    final devices = await getAdbDevices();
+    // 用户主动点同步:没设备时强制重启一次 adb 服务(绕过冷却),
+    // 手机明明插着却报「未检测到设备」多半是 adb 服务卡死了。
+    final devices = await getAdbDevices(forceRestart: true);
     if (devices.isEmpty) {
       messageNotifier.value = 'USB: 未检测到设备，请确认手机已连接并开启 USB 调试';
       return false;
@@ -367,6 +419,18 @@ class SyncService {
       _adbMonitorProcess!.stderr
           .transform(utf8.decoder)
           .listen((_) {}); // ignore stderr
+
+      // adb 服务进程死掉时 `track-devices` 会直接退出,而旧代码从不处理退出,
+      // 于是「自动同步」从此静默失效、只能重启应用 —— 这正是用户反复遇到
+      // 「又不能同步了」的另一半原因(另一半是 ensureAdbForward 只看映射是否存在)。
+      _adbMonitorProcess!.exitCode.then((code) {
+        print('[USB] adb track-devices 已退出(code=$code),3 秒后重启监听');
+        _adbMonitorProcess = null;
+        _knownAdbDevices.clear();
+        Future<void>.delayed(const Duration(seconds: 3), () {
+          startAdbMonitor();
+        });
+      });
 
       messageNotifier.value = 'ADB 监听已启动';
     } catch (_) {}

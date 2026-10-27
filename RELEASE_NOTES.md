@@ -1,4 +1,4 @@
-# Moon Note v3.2.3 (Windows x64 / Android)
+# Moon Note v3.2.4 (Windows x64 / Android)
 
 本地优先的笔记应用:Markdown 编辑与预览、**目录大纲与正文折叠**、待办清单、提醒、回收站、
 局域网 + USB 双向同步、同步变更记录与一致性检查。
@@ -8,13 +8,25 @@
 | 平台 | 文件 | 说明 |
 |---|---|---|
 | Windows | `moon_note-windows-x64.zip` | 解压到任意目录,双击 `moon_note.exe` 运行 |
-| Android | `moon_note_v3.2.3.apk` | 直接安装(覆盖安装请使用同一签名版本) |
+| Android | `moon_note_v3.2.4.apk` | 直接安装(覆盖安装请使用同一签名版本) |
 
 **Windows 无需安装 Flutter 或 SQLite**——压缩包内已包含 `flutter_windows.dll`、
 `sqlite3.dll` 等全部运行依赖与 `data\` 资源目录。
 ⚠️ 请解压整个文件夹后再运行,不要单独拷走 exe。
 
 ## 本版更新
+
+### 同步「又坏了」的根因修复(v3.2.4 重点)
+
+不是同步逻辑本身出错,而是**两处缺少自愈**,现象一样:USB 同步突然全失败,重启应用
+或手动重启 adb 才恢复。
+
+- **adb 服务卡死**:adb 守护进程挂掉/卡住时,`adb devices` 会返回**空列表**,
+  手机明明插着也报「未检测到设备」。现在设备列表为空时会自动重启一次 adb 服务
+  (`kill-server` + `start-server`)再查;主动点「同步」/「检测」不受冷却限制
+- **adb 监听进程退出后再也不恢复**:应用靠 `adb track-devices` 监听设备插拔,
+  旧代码**从不处理它退出** —— adb 服务一死这个进程就没了,"自动同步"从此静默
+  失效、只能重启应用。现在退出后 3 秒自动重启监听
 
 ### 目录大纲(新)
 

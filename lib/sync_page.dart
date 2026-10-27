@@ -134,7 +134,9 @@ class _SyncPageState extends State<SyncPage> {
   }
 
   Future<void> _detectAdbDevices() async {
-    final devices = await _sync.getAdbDevices();
+    // 用户主动点「检测」:允许强制重启一次 adb 服务(手机插着却报未检测到,
+    // 多半是 adb 服务卡死了,重启即恢复)
+    final devices = await _sync.getAdbDevices(forceRestart: true);
     if (!mounted) return;
     // 必须 setState:下面那一排按钮(设置端口映射 / 取消映射 / **同步**)的显示
     // 条件是 `_adbDevices.isNotEmpty`,而 `_adbDevices` 不是 ValueNotifier,
