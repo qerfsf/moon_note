@@ -104,6 +104,13 @@ class _NotePageState extends State<NotePage> {
   static const double _outlineWideWidth = 760;
   static const double _outlinePanelWidth = 220;
 
+  /// 独立窗口的版心宽度。
+  ///
+  /// 主窗口版心 800;独立窗口是"看得更多"才开的,给它 1100 —— 比主窗口宽得多,
+  /// 但在 1280 宽的小本上两侧仍各留约 90px、在 1920 大屏上留更多,
+  /// 保持简约风需要的留白,不会把字拉成一整屏宽的长行。
+  static const double _standaloneBodyMaxWidth = 1100;
+
   /// 笔记页实际分到的宽度。
   ///
   /// 不能用 MediaQuery 的窗口宽度:笔记页也会被嵌进首页的右侧分栏
@@ -385,7 +392,7 @@ class _NotePageState extends State<NotePage> {
       where: 'key = ?',
       whereArgs: ['last_view_mode'],
     );
-    if (result.isNotEmpty) {
+    if (result.isNotEmpty && mounted) {
       setState(() => _isPreviewing = result.first['value'] == 'preview');
     }
   }
@@ -518,7 +525,7 @@ class _NotePageState extends State<NotePage> {
       where: 'key = ?',
       whereArgs: ['show_images'],
     );
-    if (result.isNotEmpty) {
+    if (result.isNotEmpty && mounted) {
       setState(() => _showImages = result.first['value'] == '1');
     }
   }
@@ -538,7 +545,7 @@ class _NotePageState extends State<NotePage> {
       where: 'key = ?',
       whereArgs: ['font_size'],
     );
-    if (result.isNotEmpty) {
+    if (result.isNotEmpty && mounted) {
       final val = double.tryParse(result.first['value'] as String);
       if (val != null && val >= _fontSizeMin && val <= _fontSizeMax) {
         setState(() => _fontSize = val);
@@ -573,6 +580,9 @@ class _NotePageState extends State<NotePage> {
       where: 'note_id = ?',
       whereArgs: [widget.noteId],
     );
+    // 页面可能在查询途中就被关掉了(独立窗口关得快、或切到别的笔记),
+    // 这时 controller 已经 dispose,再赋值会抛 "used after dispose"。
+    if (!mounted) return;
     if (result.isNotEmpty) {
       final content = result.first['content'] as String;
       _contentController.text = content;
@@ -2104,10 +2114,15 @@ class _NotePageState extends State<NotePage> {
           child: Divider(height: 0.5, thickness: 0.5, color: _borderLight),
         ),
       ),
+      // 版心宽度:主窗口 800(要和右侧目录栏分栏,行太长也不易读)。
+      // 独立窗口是为了"看得更多"才开的,所以给它一个更宽的版心 —— 但**不是占满**:
+      // 界面是简约风,居中 + 两侧留白才有呼吸感。窗口再宽,正文也止步于这个宽度。
       body: _isDesktop
           ? Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 800),
+                constraints: BoxConstraints(
+                  maxWidth: widget.standalone ? _standaloneBodyMaxWidth : 800,
+                ),
                 child: body,
               ),
             )
