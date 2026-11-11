@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'sync_service.dart';
+import 'sync_conflict.dart';
 
 class SyncPage extends StatefulWidget {
   const SyncPage({super.key});
@@ -467,9 +468,85 @@ class _SyncPageState extends State<SyncPage> {
             const SizedBox(height: 12),
             const Center(child: CircularProgressIndicator()),
           ],
+
+          // 待处理冲突:两端都改过的笔记,等用户选哪一边
+          ValueListenableBuilder<List<SyncConflict>>(
+            valueListenable: ConflictStore.instance.conflicts,
+            builder: (context, list, _) {
+              if (list.isEmpty) return const SizedBox.shrink();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _error.withAlpha(18),
+                      border: Border.all(color: _error.withAlpha(70)),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.warning_amber_rounded,
+                                size: 16, color: _error),
+                            const SizedBox(width: 6),
+                            Text('待处理冲突 ${list.length} 条',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: _error)),
+                            const Spacer(),
+                            Text('两边都没被覆盖,选一个',
+                                style:
+                                    TextStyle(fontSize: 11, color: _outline)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        for (final c in list)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '「${c.displayTitle}」'
+                                    '  本机 ${_shortTime(c.localTime)}'
+                                    ' / 对端 ${_shortTime(c.remoteTime)}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 12.5, color: _onSurface),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                _smallBtn('对比并选择', () {
+                                  showConflictDialog(context, c).then((_) {
+                                    if (mounted) setState(() {});
+                                  });
+                                }),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
         ],
       ),
     );
+  }
+
+  String _shortTime(int ms) {
+    if (ms <= 0) return '?';
+    final d = DateTime.fromMillisecondsSinceEpoch(ms);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
   }
 
   Widget _sectionHeader(String title) {

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'database.dart';
 import 'image_service.dart';
 import 'sync_change.dart';
+import 'sync_conflict.dart';
 import 'app_version.dart';
 
 enum SyncStatus { idle, connecting, syncing, error }
@@ -1224,6 +1225,15 @@ class SyncService {
       }
     }
 
+    // 冲突判定用:本机有哪些改动还没推出去(本机时钟)
+    final lastPush = await _getLastPushTime();
+    final conflictedIds = <String>{};
+    final remoteContentById = <String, String>{
+      for (final c in (data['content'] as List? ?? const []))
+        if (c is Map && c['note_id'] is String)
+          c['note_id'] as String: (c['content'] as String?) ?? '',
+    };
+
     if (data['nodes'] != null && (data['nodes'] as List).isNotEmpty) {
       final nodes = data['nodes'] as List;
       // Batch load existing nodes
@@ -1243,7 +1253,35 @@ class SyncService {
         if (localModified == null) {
           batch.insert('nodes', _toDbMap(node));
           merged++;
-        } else if (remoteModified > localModified) {
+          continue;
+        }
+        // 冲突:本机这份**还没推出去**(modified_at 在推送水位线之后),
+        // 而对端又拿着一份不同的版本 —— 两端都改过,不替用户决定。
+        // 这里什么都不写,把两边内容记进 ConflictStore,由界面让用户选。
+        if (localModified > lastPush && remoteModified != localModified) {
+          final localRow = await db.query('nodes',
+              where: 'id = ?', whereArgs: [id], limit: 1);
+          final localContentRow = await db.query('note_content',
+              where: 'note_id = ?', whereArgs: [id], limit: 1);
+          ConflictStore.instance.add(SyncConflict(
+            noteId: id,
+            localTitle: localRow.isEmpty
+                ? ''
+                : (localRow.first['title'] as String?) ?? '',
+            remoteTitle: (node['title'] as String?) ?? '',
+            localTime: localModified,
+            remoteTime: remoteModified,
+            localContent: localContentRow.isEmpty
+                ? ''
+                : (localContentRow.first['content'] as String?) ?? '',
+            remoteContent: remoteContentById[id] ?? '',
+          ));
+          conflictedIds.add(id);
+          print('[SYNC] 发现冲突(不写库,等用户选): $id '
+              '本机=$localModified 对端=$remoteModified');
+          continue;
+        }
+        if (remoteModified > localModified) {
           batch.update('nodes', _toDbMap(node), where: 'id = ?', whereArgs: [id]);
           merged++;
         }
@@ -1264,6 +1302,8 @@ class SyncService {
       final batch = db.batch();
       for (final c in contentList) {
         final noteId = c['note_id'] as String;
+        // 冲突的笔记连正文也不动,否则等于替用户做了选择
+        if (conflictedIds.contains(noteId)) continue;
         final remoteModified = c['modified_at'] as int;
         final localModified = existingMap[noteId];
         if (localModified == null) {
