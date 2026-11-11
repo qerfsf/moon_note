@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -113,12 +114,55 @@ String? _argValue(List<String> args, String key) {
 /// 是的话返回笔记 id。
 String? standaloneNoteIdFromArgs(List<String> args) => _argValue(args, '--note');
 
-void main(List<String> args) async {
+// ── 日志落盘 ────────────────────────────────────────────────
+// release 版没有控制台,用户在真实使用里遇到同步失败时,
+// `print` 输出的 `[SYNC]`/`[USB]` 那些行一条都看不到,只能靠猜。
+// 用 Zone 的 print 拦截把所有输出同时写进 Documents\MoonNote\app.log,
+// 排查时直接看文件就行。超过 2MB 就截掉前一半,避免无限增长。
+File? _logFile;
+
+void _appendLog(String line) {
+  try {
+    final f = _logFile;
+    if (f == null) return;
+    final stamp = DateTime.now().toIso8601String().substring(11, 19);
+    f.writeAsStringSync('$stamp $line\n',
+        mode: FileMode.append, flush: true);
+    if (f.lengthSync() > 2 * 1024 * 1024) {
+      final all = f.readAsLinesSync();
+      f.writeAsStringSync(
+          all.sublist(all.length ~/ 2).join('\n') + '\n', flush: true);
+    }
+  } catch (_) {
+    // 日志失败绝不能影响应用
+  }
+}
+
+void main(List<String> args) {
+  runZonedGuarded(
+    () => _start(args),
+    (error, stack) => _appendLog('未捕获异常: $error\n$stack'),
+    zoneSpecification: ZoneSpecification(
+      print: (self, parent, zone, line) {
+        _appendLog(line);
+        parent.print(zone, line);
+      },
+    ),
+  );
+}
+
+Future<void> _start(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
+  // 日志文件放在数据库旁边(Documents\MoonNote\app.log)
+  try {
+    final dbPath = await DatabaseHelper.resolvedDatabasePath;
+    _logFile = File('${File(dbPath).parent.path}${Platform.pathSeparator}app.log');
+    _appendLog('=== 应用启动 pid=$pid ${Platform.operatingSystem} ===');
+  } catch (_) {}
   await DatabaseHelper.instance.database;
 
   // ── 单独窗口模式 ──

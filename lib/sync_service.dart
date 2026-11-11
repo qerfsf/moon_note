@@ -636,6 +636,37 @@ class SyncService {
     return 0;
   }
 
+  /// **推送**用的水位线(本机时钟)。
+  ///
+  /// 必须和 [last_sync_time] 分开:后者是"拉取"用的,存的是**对端时钟**的
+  /// server_time。老代码拿它同时当推送的筛选条件,于是把水位线设成"对端现在"
+  /// 之后,推送过程中产生的改动(modified_at 落在水位线以下)就**永久不会再被
+  /// 选中** —— 用户看到的就是"越同步越不同步"。实测电脑的水位线曾经比本地最新
+  /// 修改时间还超前 223 秒。
+  ///
+  /// 这条水位线只会推进到"真正发出去的那批记录里最大的 modified_at",
+  /// 没发出任何东西就原地不动,所以永远不会跳过任何一次本地改动。
+  Future<int> _getLastPushTime() async {
+    final db = await DatabaseHelper.instance.database;
+    final result = await db.query(
+      'app_settings',
+      where: 'key = ?',
+      whereArgs: ['last_push_time'],
+    );
+    if (result.isNotEmpty) {
+      return int.tryParse(result.first['value'] as String) ?? 0;
+    }
+    return 0;
+  }
+
+  Future<void> _setLastPushTime(int time) async {
+    final db = await DatabaseHelper.instance.database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+      ['last_push_time', time.toString()],
+    );
+  }
+
   Future<void> _setLastSyncTime(int time) async {
     lastSyncTimeNotifier.value = time;
     final db = await DatabaseHelper.instance.database;
@@ -734,7 +765,10 @@ class SyncService {
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 1);
     try {
-      final lastSync = since ?? await _getLastSyncTime();
+      // 选"要推的记录"必须用**推送水位线**(本机时钟),不能用 since / 拉取水位线
+      // —— 后者存的是对端时钟的 server_time,拿它筛本地行会漏掉落在两者之间的
+      // 改动(实测水位线曾超前本地最新修改 223 秒,导致某些改动永远不推)。
+      final lastSync = await _getLastPushTime();
       final db = await DatabaseHelper.instance.database;
 
       final nodes = await db.query(
@@ -804,6 +838,26 @@ class SyncService {
       }
       if (data['nodes'] != null) {
         await _mergeRemoteData(data);
+      }
+      // 推送水位线只推进到"这批真正发出去的最大 modified_at"。
+      // 绝不推到 now:推送过程中用户可能刚好改了某个笔记,那条的 modified_at
+      // 会落在 now 之下,一旦水位线推到 now 就再也不会被选中(经典的漏传)。
+      var maxSent = 0;
+      for (final row in nodes) {
+        final m = (row['modified_at'] as num?)?.toInt() ?? 0;
+        if (m > maxSent) maxSent = m;
+      }
+      for (final row in reminders) {
+        final m = (row['modified_at'] as num?)?.toInt() ?? 0;
+        if (m > maxSent) maxSent = m;
+      }
+      for (final row in todos) {
+        final m = (row['modified_at'] as num?)?.toInt() ?? 0;
+        if (m > maxSent) maxSent = m;
+      }
+      if (maxSent > 0) {
+        await _setLastPushTime(maxSent);
+        print('[PUSH] 推送水位线推进到 $maxSent');
       }
       if (pendingDeletes.isNotEmpty) {
         _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));

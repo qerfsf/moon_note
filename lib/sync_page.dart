@@ -104,8 +104,16 @@ class _SyncPageState extends State<SyncPage> {
   }
 
   Future<void> _doSync([String? host, int? port]) async {
-    if (_isSyncing) return;
+    if (_isSyncing) {
+      // 已经在同步:明确告诉用户,而不是"按了没反应"
+      _sync.messageNotifier.value = '正在同步中,请稍候…';
+      return;
+    }
     setState(() => _isSyncing = true);
+    // 按下立刻给反馈 —— 之前从点击到出结果之间界面一声不响,
+    // 用户以为没点到,会连按好几次。
+    _sync.statusNotifier.value = SyncStatus.syncing;
+    _sync.messageNotifier.value = '正在同步…(检查连接)';
     try {
       final h = host ?? _hostController.text.trim();
       final p = port ?? int.tryParse(_portController.text) ?? 9090;
@@ -114,6 +122,7 @@ class _SyncPageState extends State<SyncPage> {
       // 这里先校验并重建,否则用户点了同步只会看到连接失败,还不知道原因。
       var ready = true;
       if (h == '127.0.0.1' && p == 9091) {
+        _sync.messageNotifier.value = '正在同步…(检查 USB 端口转发)';
         ready =
             await _sync.ensureAdbForward(localPort: 9091, remotePort: 9090);
         if (mounted) {
@@ -125,7 +134,10 @@ class _SyncPageState extends State<SyncPage> {
           }
         }
       }
-      if (ready) await _sync.fullSync(h, p);
+      if (ready) {
+        _sync.messageNotifier.value = '正在同步…(推送并接收变更)';
+        await _sync.fullSync(h, p);
+      }
     } catch (_) {
       // Error already handled in service
     } finally {
