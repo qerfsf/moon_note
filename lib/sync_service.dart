@@ -857,8 +857,17 @@ class SyncService {
         if (m > maxSent) maxSent = m;
       }
       if (maxSent > 0) {
-        await _setLastPushTime(maxSent);
-        print('[PUSH] 推送水位线推进到 $maxSent');
+        final peerMerged = (data['merged'] as num?)?.toInt() ?? -1;
+        final sentRows = nodes.length + reminders.length + todos.length;
+        if (sentRows == 0 || peerMerged > 0) {
+          await _setLastPushTime(maxSent);
+          print('[PUSH] 推送水位线推进到 $maxSent (对端合并 $peerMerged 项)');
+        } else {
+          // 我们发了东西,但对端一项都没落库(全被判成冲突或已更新)。
+          // 这时**不能**推进水位线 —— 否则这批行就永远不会再重传,
+          // 两端会永久停在不一致的状态(实测踩过)。
+          print('[PUSH] 对端合并 0 项,水位线不推进(下轮重传)');
+        }
       }
       if (pendingDeletes.isNotEmpty) {
         _pendingDeleteIds.removeWhere((id) => pendingDeletes.contains(id));
@@ -1225,8 +1234,16 @@ class SyncService {
       }
     }
 
-    // 冲突判定用:本机有哪些改动还没推出去(本机时钟)
-    final lastPush = await _getLastPushTime();
+    // 冲突判定用:**上次同步的时间点**(本机时钟)。
+    //
+    // 判据 = 本地这条在"上次同步之后"被改动过,而对端又拿来一份不同的版本
+    //        → 两端都改过,是真冲突。
+    //
+    // 一开始用 last_push_time 当判据(本机还没推出去的改动),在**接收方**会
+    // 大面积误判:手机很少主动推,它的 last_push_time 停在很早以前,于是收到的
+    // 每条记录都"看起来没推出去"→ 全判成冲突、一律不写 → 两端永久不一致
+    // (实测 8 行差异)。这里改用 since,和变更记录的判定保持一致。
+    final sinceAtMerge = await _getLastSyncTime();
     final conflictedIds = <String>{};
     final remoteContentById = <String, String>{
       for (final c in (data['content'] as List? ?? const []))
@@ -1255,10 +1272,10 @@ class SyncService {
           merged++;
           continue;
         }
-        // 冲突:本机这份**还没推出去**(modified_at 在推送水位线之后),
-        // 而对端又拿着一份不同的版本 —— 两端都改过,不替用户决定。
+        // 冲突:本地这条在**上次同步之后**被改过(localModified > sinceAtMerge),
+        // 而对端又拿着一份不同的版本 → 两端都改过,不替用户决定。
         // 这里什么都不写,把两边内容记进 ConflictStore,由界面让用户选。
-        if (localModified > lastPush && remoteModified != localModified) {
+        if (localModified > sinceAtMerge && remoteModified != localModified) {
           final localRow = await db.query('nodes',
               where: 'id = ?', whereArgs: [id], limit: 1);
           final localContentRow = await db.query('note_content',

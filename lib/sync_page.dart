@@ -16,6 +16,11 @@ class _SyncPageState extends State<SyncPage> {
   final TextEditingController _portController = TextEditingController();
   final SyncService _sync = SyncService.instance;
   bool _isSyncing = false;
+
+  /// 上一次手点同步的结果(常驻显示在按钮下方)。
+  /// 整轮同步常常只要 1 秒,只靠一闪而过的状态文字用户根本看不到。
+  String? _lastSyncSummary;
+  bool _lastSyncOk = true;
   List<String> _ips = [];
   List<String> _adbDevices = [];
   bool _adbReversed = false;
@@ -113,8 +118,10 @@ class _SyncPageState extends State<SyncPage> {
     setState(() => _isSyncing = true);
     // 按下立刻给反馈 —— 之前从点击到出结果之间界面一声不响,
     // 用户以为没点到,会连按好几次。
+    print('[UI] 用户点了同步按钮');
     _sync.statusNotifier.value = SyncStatus.syncing;
     _sync.messageNotifier.value = '正在同步…(检查连接)';
+    final started = DateTime.now();
     try {
       final h = host ?? _hostController.text.trim();
       final p = port ?? int.tryParse(_portController.text) ?? 9090;
@@ -142,7 +149,32 @@ class _SyncPageState extends State<SyncPage> {
     } catch (_) {
       // Error already handled in service
     } finally {
-      if (mounted) setState(() => _isSyncing = false);
+      if (mounted) {
+        final failed = !_sync.messageNotifier.value.contains('完成') &&
+            !_sync.messageNotifier.value.contains('推送完成');
+        final secs =
+            (DateTime.now().difference(started).inMilliseconds / 1000.0)
+                .toStringAsFixed(1);
+        final hhmmss = TimeOfDay.now().format(context);
+        setState(() {
+          _lastSyncOk = !failed;
+          _lastSyncSummary = failed
+              ? '这次没成功：${_sync.messageNotifier.value}（$hhmmss）'
+              : '已同步 · ${_sync.messageNotifier.value} · $hhmmss 用时 ${secs}s';
+          _isSyncing = false;
+        });
+        // 同步常常只要 1 秒,底部那行状态一闪就没了,再弹一个提示让人看见
+        final msg = _lastSyncSummary;
+        if (msg != null) {
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+            SnackBar(
+              content: Text(msg),
+              duration: const Duration(seconds: 3),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
     }
   }
 
@@ -355,11 +387,43 @@ class _SyncPageState extends State<SyncPage> {
                         // 不管转发在不在都显示「同步」:_doSync 自己会先校验转发、
                         // 失效就重建,所以这个按钮任何时候点了都有意义。
                         // (以前转发一消失按钮就没了,用户会以为同步功能坏了)
-                        _smallBtn('同步',
-                            () => _doSync('127.0.0.1', 9091),
-                            isPrimary: true),
+                        //
+                        // 整轮同步常常只要 1 秒,所以反馈必须**做在按钮上**:
+                        // 直接变成「同步中…」+ 转圈,点完再显示结果和时间戳。
+                        _smallBtn(
+                          _isSyncing ? '同步中…' : '同步',
+                          _isSyncing ? null : () => _doSync('127.0.0.1', 9091),
+                          isPrimary: true,
+                          busy: _isSyncing,
+                        ),
                       ],
                     ),
+                    // 结果常驻显示:什么时候同步的、成功没有、动了几条
+                    if (_lastSyncSummary != null) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(
+                            _lastSyncOk
+                                ? Icons.check_circle_outline
+                                : Icons.error_outline,
+                            size: 14,
+                            color: _lastSyncOk ? _onSurfaceVariant : _error,
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Text(
+                              _lastSyncSummary!,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color:
+                                    _lastSyncOk ? _onSurfaceVariant : _error,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ],
               ),
@@ -559,7 +623,7 @@ class _SyncPageState extends State<SyncPage> {
   }
 
   Widget _smallBtn(String label, VoidCallback? onTap,
-      {bool isPrimary = false}) {
+      {bool isPrimary = false, bool busy = false}) {
     return SizedBox(
       height: 32,
       child: ElevatedButton(
@@ -580,7 +644,24 @@ class _SyncPageState extends State<SyncPage> {
           ),
           minimumSize: Size.zero,
         ),
-        child: Text(label, style: const TextStyle(fontSize: 13)),
+        child: busy
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.8,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                          isPrimary ? _surface : _onSurfaceVariant),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(label, style: const TextStyle(fontSize: 13)),
+                ],
+              )
+            : Text(label, style: const TextStyle(fontSize: 13)),
       ),
     );
   }
