@@ -87,4 +87,33 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('插入图片'), findsOneWidget);
   });
+
+  testWidgets('新建笔记跳进标题框时,标题是**全选**状态', (tester) async {
+    // 用户反馈:跳转到命名了,但名字是「未命名」却没全选,得先删掉再打字。
+    // 这里直接读输入框 controller 的选择范围来验证。
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(MaterialApp(
+      home: NotePage(
+        noteId: noteId,
+        initialTitle: '未命名',
+        autoFocusTitle: true,
+      ),
+    ));
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 400)));
+    await tester.pumpAndSettle();
+
+    final tf = tester.widget<TextField>(
+        find.byKey(const ValueKey('note_title_field'), skipOffstage: false));
+    final sel = tf.controller!.selection;
+    // ignore: avoid_print
+    print('[测试] 标题选择范围: base=${sel.baseOffset} extent=${sel.extentOffset} '
+        '文本="${tf.controller!.text}"');
+    expect(sel.baseOffset, 0, reason: '应当从第一个字开始选中');
+    expect(sel.extentOffset, tf.controller!.text.length,
+        reason: '应当选中整个「未命名」,直接打字就能覆盖');
+  });
 }

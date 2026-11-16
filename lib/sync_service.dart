@@ -41,6 +41,10 @@ class SyncService {
   /// 本轮涉及的回收站永久删除条数(发送 + 收到的 deleted_ids)。
   int _roundHardDeletes = 0;
 
+  /// 同一条记录被对端连续拒收的次数(内存计数,不持久化)。
+  /// 用来掐掉"每 10 秒重推同一条"的空转 —— 连续 3 次就认定对端已有等价版本。
+  final Map<String, int> _pushRefused = <String, int>{};
+
   Process? _adbMonitorProcess;
   final _knownAdbDevices = <String>{};
   bool _adbSyncLock = false;
@@ -884,11 +888,27 @@ class SyncService {
         }
         if (sentRows == 0 || canAdvance) {
           await _setLastPushTime(maxSent);
+          _pushRefused.clear();
           print('[PUSH] 推送水位线推进到 $maxSent (对端合并 $peerMerged 项)');
         } else {
-          // 我们发了东西、对端没落库、也没回传更新的同 id 版本 →
-          // 不能推进,否则这批行永远不会再重传(两端会永久停在不一致)。
-          print('[PUSH] 对端合并 0 项,水位线不推进(下轮重传)');
+          // 我们发了东西、对端没落库、也没回传更新的同 id 版本。
+          // 前两次不推进(万一是请求丢了/真冲突,下轮还能重传);
+          // 但同一条连续被拒 3 次就当成"对端已经有等价版本",推进水位线,
+          // 否则会每 10 秒重推一次同一条,日志被刷满(实测就是这个问题)。
+          var allGivenUp = true;
+          for (final n in nodes) {
+            final id = n['id'] as String;
+            final c = (_pushRefused[id] ?? 0) + 1;
+            _pushRefused[id] = c;
+            if (c < 3) allGivenUp = false;
+          }
+          if (allGivenUp) {
+            await _setLastPushTime(maxSent);
+            _pushRefused.clear();
+            print('[PUSH] 同一条已连续被拒 3 次,认定对端等价,水位线推进到 $maxSent');
+          } else {
+            print('[PUSH] 对端合并 0 项,水位线暂不推进(下轮重传)');
+          }
         }
       }
       if (pendingDeletes.isNotEmpty) {

@@ -372,15 +372,18 @@ class _NotePageState extends State<NotePage> {
     _loadFontSize();
     _loadImageSetting();
     if (widget.autoFocusTitle) {
-      // 聚焦本身交给 TextField 的 autofocus(框架保证首帧结束后请求),
-      // 这里只负责把已有标题全选上,让用户可以直接打字覆盖「未命名」。
+      // 聚焦交给 TextField 的 autofocus(框架在首帧结束后请求),
+      // 这里负责把已有标题**全选**,让用户可以直接打字覆盖「未命名」。
+      //
+      // 注意:不能加 hasFocus 判断 —— autofocus 的焦点是在本回调之后才落定的,
+      // 判 hasFocus 会一直是 false,于是"跳转了却没全选"(用户实测反馈)。
+      // 选择范围在没有焦点时设也有效,焦点到来后会保留。
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _titleFocusNode.hasFocus) {
-          _titleController.selection = TextSelection(
-            baseOffset: 0,
-            extentOffset: _titleController.text.length,
-          );
-        }
+        if (!mounted) return;
+        _titleController.selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: _titleController.text.length,
+        );
       });
     }
   }

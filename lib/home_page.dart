@@ -1290,17 +1290,9 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _renameNode(Map<String, dynamic> node) async {
-    if ((node['is_system'] as int) == 1) return;
-    final originalText = (node['title'] as String?) ?? '';
-    final controller = TextEditingController(text: originalText)
-      // 默认全选:直接打字就是覆盖(和文件管理器改名字一样)。
-      // 新建文件夹后立刻弹这个框,用户不用先删掉「未命名文件夹」四个字。
-      ..selection = TextSelection(
-        baseOffset: 0,
-        extentOffset: originalText.length,
-      );
-    final result = await showDialog<String>(
+  Future<String?> _showRenameDialog(
+      Map<String, dynamic> node, TextEditingController controller) {
+    return showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text(
@@ -1343,6 +1335,31 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
     );
+  }
+
+  Future<void> _renameNode(Map<String, dynamic> node) async {
+    if ((node['is_system'] as int) == 1) return;
+    final originalText = (node['title'] as String?) ?? '';
+    final controller = TextEditingController(text: originalText)
+      // 默认全选:直接打字就是覆盖(和文件管理器改名字一样)。
+      // 新建文件夹后立刻弹这个框,用户不用先删掉「未命名文件夹」四个字。
+      // 但仅设 controller.selection 不够 —— 输入框拿到焦点时会把自己的光标
+      // 折叠到末尾,于是看起来"没全选"。真正生效的是下面 post-frame 那次重设。
+      ..selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: originalText.length,
+      );
+    // 关键:输入框拿到焦点时会把光标折叠到末尾,所以要在对话框首帧之后
+    // (autofocus 已生效)再设一次全选,否则用户看到的就是"跳转到命名了,
+    // 但名字没选中"。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (originalText.isEmpty) return;
+      controller.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: controller.text.length,
+      );
+    });
+    final result = await _showRenameDialog(node, controller);
     if (result != null && result.isNotEmpty) {
       final db = await DatabaseHelper.instance.database;
       await db.update(
