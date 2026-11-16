@@ -1232,6 +1232,11 @@ class _NotePageState extends State<NotePage> {
                   _toolbarBtn(Icons.format_italic, '*', '*'),
                   const SizedBox(width: 8),
                   _toolbarBtn(Icons.format_list_bulleted, '- ', ''),
+                  // 一级 / 二级标题:界面上就是「1」「2」两个数字
+                  _toolbarBtn(Icons.looks_one_outlined, '', '',
+                      onTap: () => _insertMarkdown('# ', '')),
+                  _toolbarBtn(Icons.looks_two_outlined, '', '',
+                      onTap: () => _insertMarkdown('## ', '')),
                   _toolbarBtn(Icons.checklist, '- [ ] ', '', onTap: () => _insertMarkdown('- [ ] ', '')),
                   _toolbarBtn(Icons.link, '', '', onTap: _showLinkPicker),
                   const SizedBox(width: 8),
@@ -1242,17 +1247,8 @@ class _NotePageState extends State<NotePage> {
                 ],
               ),
             ),
-            _toolbarBtn(Icons.image_outlined, '', '', onTap: _insertImage),
-            _toolbarBtn(
-              _isPreviewing ? Icons.edit_outlined : Icons.visibility_outlined,
-              '', '',
-              onTap: () {
-                if (!_isPreviewing) _doSave();
-                setState(() => _isPreviewing = !_isPreviewing);
-                _saveViewMode();
-                _syncActiveHeading();
-              },
-            ),
+            // 插入图片、切换阅读模式都收进「更多」/右上角了:
+            // 阅读模式在 AppBar 右上角已经有一个,工具栏里重复一个反而挤。
             PopupMenuButton<String>(
               icon: Icon(Icons.add_circle_outline, size: 20, color: _textTertiary),
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -1261,6 +1257,7 @@ class _NotePageState extends State<NotePage> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               onSelected: (v) {
                 switch (v) {
+                  case 'image': _insertImage(); break;
                   case 'h1': _insertMarkdown('# ', ''); break;
                   case 'h2': _insertMarkdown('## ', ''); break;
                   case 'strike': _insertMarkdown('~~', '~~'); break;
@@ -1277,6 +1274,8 @@ class _NotePageState extends State<NotePage> {
                 }
               },
               itemBuilder: (ctx) => [
+                _popupItem(Icons.image_outlined, '插入图片', 'image'),
+                const PopupMenuDivider(height: 1),
                 _popupItem(Icons.title, '一级标题', 'h1'),
                 _popupItem(Icons.format_size, '二级标题', 'h2'),
                 _popupItem(Icons.strikethrough_s, '删除线', 'strike'),

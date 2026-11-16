@@ -110,6 +110,8 @@ class _SyncPageState extends State<SyncPage> {
   }
 
   Future<void> _doSync([String? host, int? port]) async {
+    // 第一行就记日志:排查"点了没反应"时,这条决定了点击到底有没有进到函数里
+    print('[UI] 用户点了同步按钮 (host=$host port=$port)');
     if (_isSyncing) {
       // 已经在同步:明确告诉用户,而不是"按了没反应"
       _sync.messageNotifier.value = '正在同步中,请稍候…';
@@ -118,7 +120,6 @@ class _SyncPageState extends State<SyncPage> {
     setState(() => _isSyncing = true);
     // 按下立刻给反馈 —— 之前从点击到出结果之间界面一声不响,
     // 用户以为没点到,会连按好几次。
-    print('[UI] 用户点了同步按钮');
     _sync.statusNotifier.value = SyncStatus.syncing;
     _sync.messageNotifier.value = '正在同步…(检查连接)';
     final started = DateTime.now();
@@ -241,6 +242,86 @@ class _SyncPageState extends State<SyncPage> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
+          // 顶部同步状态横幅:点下去立刻出现,结束后变成结果并常驻。
+          // 整轮同步常常只要 1 秒,消息放页面底部用户根本看不到。
+          if (_isSyncing)
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _onSurface.withAlpha(12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(_onSurface),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _sync.messageNotifier.value.isEmpty
+                              ? '正在同步…'
+                              : _sync.messageNotifier.value,
+                          style: TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                              color: _onSurface),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(3),
+                    child: const LinearProgressIndicator(minHeight: 3),
+                  ),
+                ],
+              ),
+            )
+          else if (_lastSyncSummary != null)
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: (_lastSyncOk ? _onSurface : _error).withAlpha(12),
+                border: Border.all(
+                    color: (_lastSyncOk ? _outlineVariant : _error)
+                        .withAlpha(120)),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _lastSyncOk
+                        ? Icons.check_circle_outline
+                        : Icons.error_outline,
+                    size: 18,
+                    color: _lastSyncOk ? _onSurface : _error,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _lastSyncSummary!,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: _lastSyncOk ? _onSurface : _error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // Server section
           _sectionHeader('本机服务'),
           const SizedBox(height: 8),
