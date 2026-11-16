@@ -322,6 +322,33 @@ class _SyncPageState extends State<SyncPage> {
                 ],
               ),
             ),
+          // 手机端专用说明:这里的「同步/连接」是 WiFi 同步,连不上时最容易
+          // 被误认为"功能坏了"。USB 同步由电脑端发起,手机保持运行即可。
+          if (Platform.isAndroid)
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _outlineVariant.withAlpha(40),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline, size: 16, color: _outline),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '手机上的同步是【WiFi 同步】:手机要和电脑连同一个 WiFi,'
+                      '并在下面填电脑的 IP。\n'
+                      '【USB 同步】由电脑端发起 —— 手机保持 App 在运行就不用管它。',
+                      style: TextStyle(
+                          fontSize: 12, height: 1.5, color: _outline),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // Server section
           _sectionHeader('本机服务'),
           const SizedBox(height: 8),

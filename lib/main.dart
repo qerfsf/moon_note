@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart' show getExternalStorageDirectory;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'database.dart';
 import 'home_page.dart';
@@ -117,24 +118,30 @@ String? standaloneNoteIdFromArgs(List<String> args) => _argValue(args, '--note')
 // ── 日志落盘 ────────────────────────────────────────────────
 // release 版没有控制台,用户在真实使用里遇到同步失败时,
 // `print` 输出的 `[SYNC]`/`[USB]` 那些行一条都看不到,只能靠猜。
-// 用 Zone 的 print 拦截把所有输出同时写进 Documents\MoonNote\app.log,
-// 排查时直接看文件就行。超过 2MB 就截掉前一半,避免无限增长。
-File? _logFile;
+// 用 Zone 的 print 拦截把所有输出同时写进日志文件,排查时直接看文件就行。
+//
+// 落两个地方:
+//   电脑端  → 我的文档\MoonNote\app.log
+//   手机端  → 应用私有目录(documents) + **外部私有目录**
+//             (/sdcard/Android/data/com.example.moon_note/files/app.log)
+//             后者可以直接 adb pull 出来,不然手机上的日志根本看不到。
+List<File> _logFiles = const <File>[];
 
 void _appendLog(String line) {
-  try {
-    final f = _logFile;
-    if (f == null) return;
-    final stamp = DateTime.now().toIso8601String().substring(11, 19);
-    f.writeAsStringSync('$stamp $line\n',
-        mode: FileMode.append, flush: true);
-    if (f.lengthSync() > 2 * 1024 * 1024) {
-      final all = f.readAsLinesSync();
-      f.writeAsStringSync(
-          all.sublist(all.length ~/ 2).join('\n') + '\n', flush: true);
+  if (_logFiles.isEmpty) return;
+  final stamp = DateTime.now().toIso8601String().substring(11, 19);
+  for (final f in _logFiles) {
+    try {
+      f.writeAsStringSync('$stamp $line\n',
+          mode: FileMode.append, flush: true);
+      if (f.lengthSync() > 2 * 1024 * 1024) {
+        final all = f.readAsLinesSync();
+        f.writeAsStringSync(
+            '${all.sublist(all.length ~/ 2).join('\n')}\n', flush: true);
+      }
+    } catch (_) {
+      // 日志失败绝不能影响应用
     }
-  } catch (_) {
-    // 日志失败绝不能影响应用
   }
 }
 
@@ -157,10 +164,22 @@ Future<void> _start(List<String> args) async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
-  // 日志文件放在数据库旁边(Documents\MoonNote\app.log)
+  // 日志文件:数据库旁边一份(电脑端=我的文档\MoonNote);
+  // 手机端再加一份外部私有目录,方便 adb pull 出来排查
   try {
     final dbPath = await DatabaseHelper.resolvedDatabasePath;
-    _logFile = File('${File(dbPath).parent.path}${Platform.pathSeparator}app.log');
+    final files = <File>[
+      File('${File(dbPath).parent.path}${Platform.pathSeparator}app.log'),
+    ];
+    if (Platform.isAndroid) {
+      try {
+        final ext = await getExternalStorageDirectory();
+        if (ext != null) {
+          files.add(File('${ext.path}${Platform.pathSeparator}app.log'));
+        }
+      } catch (_) {}
+    }
+    _logFiles = files;
     _appendLog('=== 应用启动 pid=$pid ${Platform.operatingSystem} ===');
   } catch (_) {}
   await DatabaseHelper.instance.database;

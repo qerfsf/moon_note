@@ -859,13 +859,35 @@ class SyncService {
       if (maxSent > 0) {
         final peerMerged = (data['merged'] as num?)?.toInt() ?? -1;
         final sentRows = nodes.length + reminders.length + todos.length;
-        if (sentRows == 0 || peerMerged > 0) {
+        var canAdvance = peerMerged > 0;
+        if (!canAdvance && sentRows > 0) {
+          // 对端一条都没写:可能是它对同一条有**更新的**版本(正常 LWW),
+          // 也可能是判成冲突 / 请求丢了。看它的响应来区分:如果它回传了同一个 id
+          // 且更新时间 >= 我们的版本,说明对端本来就更新,不算搁浅,可以推进;
+          // 否则保守处理,不推进,下一轮重传。
+          final ret = <String, int>{};
+          for (final r in (data['nodes'] as List? ?? const [])) {
+            if (r is Map && r['id'] is String) {
+              ret[r['id'] as String] =
+                  (r['modified_at'] as num?)?.toInt() ?? 0;
+            }
+          }
+          canAdvance = nodes.every((n) {
+            final id = n['id'] as String;
+            final peerTime = ret[id];
+            if (peerTime == null) return false; // 对端没回传 -> 不知道,别推进
+            return peerTime >= ((n['modified_at'] as num?)?.toInt() ?? 0);
+          });
+          if (canAdvance) {
+            print('[PUSH] 对端合并 0 项,但它持有相同/更新的版本,水位线可推进');
+          }
+        }
+        if (sentRows == 0 || canAdvance) {
           await _setLastPushTime(maxSent);
           print('[PUSH] 推送水位线推进到 $maxSent (对端合并 $peerMerged 项)');
         } else {
-          // 我们发了东西,但对端一项都没落库(全被判成冲突或已更新)。
-          // 这时**不能**推进水位线 —— 否则这批行就永远不会再重传,
-          // 两端会永久停在不一致的状态(实测踩过)。
+          // 我们发了东西、对端没落库、也没回传更新的同 id 版本 →
+          // 不能推进,否则这批行永远不会再重传(两端会永久停在不一致)。
           print('[PUSH] 对端合并 0 项,水位线不推进(下轮重传)');
         }
       }
